@@ -1,0 +1,8 @@
+[package]
+name = "spider-butter-rs"
+version = "0.1.0"
+authors = ["manpat <pat@patsown.com>"]
+
+[dependencies]
+inotify = "0.4"
+flate2 = "0.2"
