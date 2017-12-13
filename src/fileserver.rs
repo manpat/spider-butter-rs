@@ -45,7 +45,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
 			Ok(r) => r,
 			Err(e) => {
 				println!("Parsing request: {}", e);
-				http::Response::new("HTTP/1.1 400 Bad Request").write_to_stream(&mut stream).unwrap();
+				let _ = http::Response::new("HTTP/1.1 400 Bad Request").write_to_stream(&mut stream);
 				continue;
 			}
 		};
@@ -61,9 +61,8 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
 		if let Some(path) = mappings.get_route(request.uri()) {
 			send_file(&mut stream, path, encoding);
 		} else {
-			http::Response::new("HTTP/1.1 404 File not found")
-				.write_to_stream(&mut stream)
-				.unwrap();
+			let _ = http::Response::new("HTTP/1.1 404 File not found")
+				.write_to_stream(&mut stream);
 		}
 	}
 }
@@ -78,9 +77,8 @@ fn send_file(mut stream: &mut TcpStream, filepath: &Path, encoding: Option<&str>
 		Ok(f) => f,
 		Err(e) => {
 			println!("Couldn't open requested file '{:?}': {}", filepath, e);
-			http::Response::new("HTTP/1.1 500 Internal Server Error")
-				.write_to_stream(&mut stream)
-				.unwrap();
+			let _ = http::Response::new("HTTP/1.1 500 Internal Server Error")
+				.write_to_stream(&mut stream);
 
 			return
 		}
@@ -89,9 +87,8 @@ fn send_file(mut stream: &mut TcpStream, filepath: &Path, encoding: Option<&str>
 	let mut body_buffer = Vec::new();
 	if let Err(e) = f.read_to_end(&mut body_buffer) {
 		println!("Couldn't read requested file '{:?}': {}", filepath, e);
-		http::Response::new("HTTP/1.1 500 Internal Server Error")
-			.write_to_stream(&mut stream)
-			.unwrap();
+		let _ = http::Response::new("HTTP/1.1 500 Internal Server Error")
+			.write_to_stream(&mut stream);
 
 		return
 	}
@@ -112,9 +109,8 @@ fn send_file(mut stream: &mut TcpStream, filepath: &Path, encoding: Option<&str>
 
 			_ => {
 				println!("Couldn't encode requested file '{:?}': Unknown encoding '{}'", filepath, encoding);
-				http::Response::new("HTTP/1.1 500 Internal Server Error")
-					.write_to_stream(&mut stream)
-					.unwrap();
+				let _ = http::Response::new("HTTP/1.1 500 Internal Server Error")
+					.write_to_stream(&mut stream);
 					
 				return
 			}

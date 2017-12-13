@@ -1,6 +1,4 @@
 extern crate inotify;
-// extern crate sha1;
-// extern crate base64;
 extern crate flate2;
 
 use std::net::TcpListener;
