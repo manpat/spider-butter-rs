@@ -4,17 +4,14 @@ extern crate flate2;
 use std::net::TcpListener;
 
 use inotify::{event_mask, watch_mask, Inotify};
-use std::{thread, fs};
+use std::thread;
 use std::sync::mpsc;
-use std::io::Read;
 
 mod fileserver;
 mod http;
 
 mod mappings;
 use mappings::*;
-
-const MAPPINGS_FILENAME: &'static str = "mappings.sb";
 
 fn main() {
 	let mut inotify = Inotify::init().expect("Inotify init failed");
@@ -26,7 +23,7 @@ fn main() {
 	let fs_listener = TcpListener::bind("0.0.0.0:8000").unwrap();
 	let (mapping_tx, mapping_rx) = mpsc::channel();
 
-	if let Ok(mappings) = load_mappings() {
+	if let Ok(mappings) = Mappings::from_file(MAPPINGS_FILENAME) {
 		mapping_tx.send(mappings).unwrap();
 	}
 
@@ -43,20 +40,10 @@ fn main() {
 
 		if mapping_file_changed {
 			println!("Updating mappings...");
-			if let Ok(mappings) = load_mappings() {
+			if let Ok(mappings) = Mappings::from_file(MAPPINGS_FILENAME) {
 				mapping_tx.send(mappings).unwrap();
 			}
 			println!("Done.");
 		}
 	}
-}
-
-fn load_mappings() -> std::io::Result<Mappings> {
-	let mut file = fs::File::open(MAPPINGS_FILENAME)?;
-	let mut contents = String::new();
-	file.read_to_string(&mut contents)?;
-
-	let mut mappings = Mappings::new();
-	mappings.load_from(&contents);
-	Ok(mappings)
 }
