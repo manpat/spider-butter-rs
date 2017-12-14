@@ -43,8 +43,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
 
 		let request = match http::Request::parse(&reqstr) {
 			Ok(r) => r,
-			Err(e) => {
-				println!("Parsing request: {}", e);
+			Err(_) => {
 				let _ = http::Response::new("HTTP/1.1 400 Bad Request").write_to_stream(&mut stream);
 				continue;
 			}
