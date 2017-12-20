@@ -1,5 +1,11 @@
+#![feature(generators, generator_trait)]
+#![feature(specialization)]
+#![feature(box_syntax)]
+#![feature(libc)]
+
 extern crate inotify;
 extern crate flate2;
+extern crate libc;
 
 use std::net::TcpListener;
 
@@ -8,6 +14,8 @@ use std::thread;
 use std::sync::mpsc;
 
 mod fileserver;
+mod coro_util;
+mod tcp_util;
 mod http;
 
 mod mappings;

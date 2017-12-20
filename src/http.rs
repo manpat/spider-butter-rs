@@ -4,6 +4,7 @@ use std::net::TcpStream;
 use std::io;
 use std::option::Option;
 use std::collections::HashMap;
+use coro_util::*;
 
 #[derive(Debug)]
 pub struct Request<'a> {
@@ -82,9 +83,7 @@ impl<'a> Response<'a> {
 		self.body = Some(body); // once told me
 	}
 
-	pub fn write_to_stream(&self, stream: &mut TcpStream) -> io::Result<()> {
-		use std::io::Write;
-
+	pub fn header_string(&self) -> String {
 		let it = std::iter::once(self.status_line.to_string());
 		let fieldit = self.fields.iter().map(|(k, v)| format!("{}: {}", k, v));
 		let mut response_str = it.chain(fieldit)
@@ -95,6 +94,13 @@ impl<'a> Response<'a> {
 			});
 
 		response_str.push_str("\r\n");
+		response_str
+	}
+
+	pub fn write_to_stream(&self, stream: &mut TcpStream) -> io::Result<()> {
+		use std::io::Write;
+
+		let response_str = self.header_string();
 
 		stream.write_all(response_str.as_bytes())?;
 
@@ -103,6 +109,24 @@ impl<'a> Response<'a> {
 		}
 
 		Ok(())
+	}
+
+	pub fn write_header_async(self, mut stream: TcpStream) -> Coro<io::Result<()>> {
+		use std::io::Write;
+		use std::io::ErrorKind::WouldBlock;
+
+		let response_str = self.header_string();
+
+		Coro::from(move || {
+			loop {
+				let res = stream.write_all(response_str.as_bytes());
+				yield match res {
+					Err(ref e) if e.kind() == WouldBlock => Ok(()),
+					Err(e) => Err(e),
+					Ok(_) => break,
+				};
+			}
+		})
 	}
 }
 

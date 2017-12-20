@@ -53,6 +53,7 @@ impl Mappings {
 			self.mappings.insert(key.to_owned(), path);
 		}
 
+		// TODO: Add inotify watches to imported mappings
 		for import in imports {
 			let path: PathBuf = [prefix, import, Path::new(MAPPINGS_FILENAME)].iter().collect();
 			let prefix = path.parent().unwrap_or(Path::new(""));
@@ -69,7 +70,7 @@ impl Mappings {
 		Ok(())
 	}
 
-	pub fn get_route(&mut self, key: &str) -> Option<&PathBuf> {
+	pub fn get_route(&self, key: &str) -> Option<&PathBuf> {
 		self.mappings.get(key)
 	}
 }
