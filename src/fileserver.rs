@@ -173,6 +173,8 @@ fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<
 fn send_data_async(mut stream: TcpStream, data: Arc<CachedFile>, encoding: Encoding) -> Coro<io::Result<()>> {
 	use std::io::ErrorKind::{WouldBlock, Interrupted};
 
+	let body = data.get_encoding(encoding).iter().cloned().collect::<Vec<_>>();
+
 	Coro::from(move || {
 		let mut res = http::Response::new("HTTP/1.1 200 OK");
 
@@ -201,18 +203,16 @@ fn send_data_async(mut stream: TcpStream, data: Arc<CachedFile>, encoding: Encod
 			while stream.has_pending_writes() { yield Ok(()) }
 		}
 
-		let body_len = data.get_encoding(encoding).len();
-
 		let mut read_amt = 0;
 		loop {
-			let result = stream.write(&data.get_encoding(encoding)[read_amt..]);
+			let result = stream.write(&body[read_amt..]);
 			yield match result {
 				Err(ref e) if e.kind() == WouldBlock => Ok(()),
 				Err(ref e) if e.kind() == Interrupted => Ok(()),
 				Err(e) => Err(e),
 				Ok(sz) => {
 					read_amt += sz;
-					if read_amt >= body_len { break }
+					if read_amt >= body.len() { break }
 					Ok(())
 				},
 			};
