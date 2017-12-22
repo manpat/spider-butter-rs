@@ -6,59 +6,37 @@ use std::time;
 use std::str;
 use std::io;
 
-use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use coro_util::*;
 use tcp_util::*;
 use mappings::*;
 use http;
 
-#[derive(Clone, Copy)]
-enum Encoding {
-	Gzip,
-	Deflate,
-}
+const MAX_CONCURRENT_CONNECTIONS_PER_THREAD: usize = 128;
+const MAX_PENDING_CONNECTIONS_PER_THREAD: usize = 128;
+const NUM_WORKER_THREADS: usize = 4;
 
 pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
-	let mut mappings = Rc::new(Mappings::new());
+	let mut mappings = Arc::new(Mappings::new());
 
-	let (tx, rx) = mpsc::channel::<Coro<()>>();
+	let mut tx_list = Vec::new();
 
-	let coro_thread = thread::spawn(move || {
-		let mut coros = Vec::new();
-
-		loop {
-			// Block until we receive a new connection
-			match rx.recv() {
-				Ok(c) => coros.push(c),
-				Err(e) => {
-					println!("[fsrv] Rx error: {:?}", e);
-					break;
-				}
-			}
-
-			// Process all connections until completion
-			loop {
-				for c in rx.try_iter() {
-					coros.push(c);
-				}
-
-				for c in coros.iter_mut() {
-					c.next();
-				}
-
-				coros.retain(Coro::is_valid);
-				if coros.is_empty() { break }
-
-				thread::sleep(time::Duration::from_millis(3));
-			}
+	let coro_threads = {
+		let mut ths = Vec::new();
+		for _ in 0..NUM_WORKER_THREADS {
+			let (tx, rx) = mpsc::sync_channel(MAX_PENDING_CONNECTIONS_PER_THREAD);
+			ths.push(thread::spawn(move || continuation_thread(rx)));
+			tx_list.push(tx);
 		}
-	});
+		ths
+	};
+
+	let mut tx_iter = tx_list.iter().cycle();
 
 	for stream in listener.incoming() {
 		if let Ok(new_mappings) = mapping_channel.try_recv() {
-			mappings = Rc::new(new_mappings);
+			mappings = Arc::new(new_mappings);
 		}
 
 		if !stream.is_ok() {
@@ -66,13 +44,49 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
 		}
 
 		let coro = start_stream_process(stream.unwrap(), mappings.clone());
-		tx.send(coro).unwrap();
+		tx_iter.next().unwrap()
+			.send(coro).unwrap();
 	}
 
-	coro_thread.join().unwrap();
+	for th in coro_threads {
+		th.join().unwrap();
+	}
 }
 
-fn start_stream_process(mut stream: TcpStream, mappings: Rc<Mappings>) -> Coro<()> {
+fn continuation_thread(rx: Receiver<Coro<()>>) {
+	let mut coros = Vec::new();
+
+	loop {
+		// Block until we receive a new connection
+		match rx.recv() {
+			Ok(c) => coros.push(c),
+			Err(e) => {
+				println!("[fsrv] Rx error: {:?}", e);
+				break;
+			}
+		}
+
+		// Process all connections until completion
+		loop {
+			if coros.len() < MAX_CONCURRENT_CONNECTIONS_PER_THREAD {
+				for c in rx.try_iter() {
+					coros.push(c);
+				}
+			}
+
+			for c in coros.iter_mut() {
+				c.next();
+			}
+
+			coros.retain(Coro::is_valid);
+			if coros.is_empty() { break }
+
+			thread::sleep(time::Duration::from_millis(3));
+		}
+	}
+}
+
+fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<()> {
 	Coro::from(move || {
 		if let Err(e) = stream.set_nonblocking(true) {
 			println!("[fsrv] set_nonblocking failed: {}", e);
@@ -131,10 +145,14 @@ fn start_stream_process(mut stream: TcpStream, mappings: Rc<Mappings>) -> Coro<(
 			encodings.sort_unstable_by_key(|k| match *k {
 				Encoding::Gzip => 1,
 				Encoding::Deflate => 2,
+				_ => 10,
 			});
 
-			if let Some(path) = mappings.get_route(request.uri()) {
-				send_file_async(stream, path, encodings.first().cloned())
+			if let Some(asset) = mappings.get_asset(request.uri()) {
+				let encoding = encodings.first().cloned()
+					.unwrap_or(Encoding::Uncompressed);
+
+				send_data_async(stream, asset, encoding)
 			} else {
 				http::Response::new("HTTP/1.1 404 File not found")
 					.write_header_async(stream)
@@ -152,54 +170,16 @@ fn start_stream_process(mut stream: TcpStream, mappings: Rc<Mappings>) -> Coro<(
 	})
 }
 
-fn send_file_async(mut stream: TcpStream, filepath: &Path, encoding: Option<Encoding>) -> Coro<io::Result<()>> {
-	use std::fs::File;
-	use flate2::Compression;
+fn send_data_async(mut stream: TcpStream, data: Arc<CachedFile>, encoding: Encoding) -> Coro<io::Result<()>> {
 	use std::io::ErrorKind::{WouldBlock, Interrupted};
-	use flate2::write::{GzEncoder, DeflateEncoder};
-
-	// TODO: cache
-	let mut f = match File::open(filepath) {
-		Ok(f) => f,
-		Err(e) => {
-			println!("Couldn't open requested file '{:?}': {}", filepath, e);
-			return http::Response::new("HTTP/1.1 500 Internal Server Error")
-				.write_header_async(stream)
-		}
-	};
-
-	let mut body_buffer = Vec::new();
-	if let Err(e) = f.read_to_end(&mut body_buffer) {
-		println!("Couldn't read requested file '{:?}': {}", filepath, e);
-		return http::Response::new("HTTP/1.1 500 Internal Server Error")
-			.write_header_async(stream)
-	}
 
 	Coro::from(move || {
 		let mut res = http::Response::new("HTTP/1.1 200 OK");
 
-		if let Some(encoding) = encoding {
-			let mut encoded_buffer = Vec::new();
-
-			let write_result = match encoding {
-				Encoding::Gzip =>
-					GzEncoder::new(&mut encoded_buffer, Compression::Default)
-						.write_all(&body_buffer),
-
-				Encoding::Deflate =>
-					DeflateEncoder::new(&mut encoded_buffer, Compression::Default)
-						.write_all(&body_buffer),
-			};
-
-			if write_result.is_ok() {
-				body_buffer = encoded_buffer;
-				match encoding {
-					Encoding::Gzip => res.set("Content-Encoding", "gzip"),
-					Encoding::Deflate => res.set("Content-Encoding", "deflate"),
-				}
-			} else {
-				println!("Failed to encode file: {}", write_result.err().unwrap());
-			}
+		match encoding {
+			Encoding::Uncompressed => {},
+			Encoding::Gzip => res.set("Content-Encoding", "gzip"),
+			Encoding::Deflate => res.set("Content-Encoding", "deflate"),
 		}
 
 		let response_head = res.header_string().into_bytes();
@@ -221,16 +201,18 @@ fn send_file_async(mut stream: TcpStream, filepath: &Path, encoding: Option<Enco
 			while stream.has_pending_writes() { yield Ok(()) }
 		}
 
+		let body_len = data.get_encoding(encoding).len();
+
 		let mut read_amt = 0;
 		loop {
-			let result = stream.write(&body_buffer[read_amt..]);
+			let result = stream.write(&data.get_encoding(encoding)[read_amt..]);
 			yield match result {
 				Err(ref e) if e.kind() == WouldBlock => Ok(()),
 				Err(ref e) if e.kind() == Interrupted => Ok(()),
 				Err(e) => Err(e),
 				Ok(sz) => {
 					read_amt += sz;
-					if read_amt >= body_buffer.len() { break }
+					if read_amt >= body_len { break }
 					Ok(())
 				},
 			};

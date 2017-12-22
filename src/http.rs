@@ -16,7 +16,6 @@ pub struct Request<'a> {
 pub struct Response<'a> {
 	status_line: &'a str,
 	fields: HashMap<&'a str, &'a str>,
-	body: Option<&'a [u8]>,
 }
 
 impl<'a> Request<'a> {
@@ -71,16 +70,11 @@ impl<'a> Response<'a> {
 		Response {
 			status_line: status,
 			fields: HashMap::new(),
-			body: None
 		}
 	}
 
 	pub fn set(&mut self, key: &'a str, value: &'a str) {
 		let _ = self.fields.insert(key, value);
-	}
-
-	pub fn set_body(&mut self, body: &'a [u8]) {
-		self.body = Some(body); // once told me
 	}
 
 	pub fn header_string(&self) -> String {
@@ -103,10 +97,6 @@ impl<'a> Response<'a> {
 		let response_str = self.header_string();
 
 		stream.write_all(response_str.as_bytes())?;
-
-		if let Some(ref body) = self.body {
-			stream.write_all(&body)?;
-		}
 
 		Ok(())
 	}

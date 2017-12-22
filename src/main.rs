@@ -31,8 +31,15 @@ fn main() {
 	let fs_listener = TcpListener::bind("0.0.0.0:8000").unwrap();
 	let (mapping_tx, mapping_rx) = mpsc::channel();
 
-	if let Ok(mappings) = Mappings::from_file(MAPPINGS_FILENAME) {
-		mapping_tx.send(mappings).unwrap();
+	match Mappings::from_file(MAPPINGS_FILENAME) {
+		Ok(mappings) => {
+			mapping_tx.send(mappings).unwrap();
+			println!("Done.");
+		}
+
+		Err(err) => {
+			println!("Error: {:?}", err);
+		}
 	}
 
 	thread::spawn(move || fileserver::start(fs_listener, mapping_rx));
@@ -48,10 +55,17 @@ fn main() {
 
 		if mapping_file_changed {
 			println!("Updating mappings...");
-			if let Ok(mappings) = Mappings::from_file(MAPPINGS_FILENAME) {
-				mapping_tx.send(mappings).unwrap();
+
+			match Mappings::from_file(MAPPINGS_FILENAME) {
+				Ok(mappings) => {
+					mapping_tx.send(mappings).unwrap();
+					println!("Done.");
+				}
+
+				Err(err) => {
+					println!("Error: {:?}", err);
+				}
 			}
-			println!("Done.");
 		}
 	}
 }

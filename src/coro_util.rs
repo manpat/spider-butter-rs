@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::ops::{Generator, GeneratorState};
 use std::marker::Send;
 
