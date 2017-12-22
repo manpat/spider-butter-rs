@@ -81,7 +81,7 @@ fn continuation_thread(rx: Receiver<Coro<()>>) {
 			coros.retain(Coro::is_valid);
 			if coros.is_empty() { break }
 
-			thread::sleep(time::Duration::from_millis(3));
+			thread::sleep(time::Duration::from_millis(1));
 		}
 	}
 }
