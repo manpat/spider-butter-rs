@@ -95,6 +95,7 @@ impl Mappings {
 		Ok(())
 	}
 
+	// TODO: Add inotify watches to assets
 	fn process_mapped_assets(&mut self) -> io::Result<()> {
 		use std::collections::hash_map::Entry;
 		use std::time::Instant;

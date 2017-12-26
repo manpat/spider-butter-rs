@@ -6,7 +6,7 @@ use std::time;
 use std::str;
 use std::io;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use coro_util::*;
 use tcp_util::*;
@@ -18,7 +18,7 @@ const MAX_PENDING_CONNECTIONS_PER_THREAD: usize = 128;
 const NUM_WORKER_THREADS: usize = 4;
 
 pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
-	let mut mappings = Arc::new(Mappings::new());
+	let mappings = Arc::new(RwLock::new(Mappings::new()));
 
 	let mut tx_list = Vec::new();
 
@@ -36,7 +36,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
 
 	for stream in listener.incoming() {
 		if let Ok(new_mappings) = mapping_channel.try_recv() {
-			mappings = Arc::new(new_mappings);
+			*mappings.write().unwrap() = new_mappings;
 		}
 
 		if !stream.is_ok() {
@@ -86,7 +86,7 @@ fn continuation_thread(rx: Receiver<Coro<()>>) {
 	}
 }
 
-fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<()> {
+fn start_stream_process(mut stream: TcpStream, mappings: Arc<RwLock<Mappings>>) -> Coro<()> {
 	Coro::from(move || {
 		if let Err(e) = stream.set_nonblocking(true) {
 			println!("[fsrv] set_nonblocking failed: {}", e);
@@ -148,7 +148,7 @@ fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<
 				_ => 10,
 			});
 
-			if let Some(asset) = mappings.get_asset(request.uri()) {
+			if let Some(asset) = mappings.read().unwrap().get_asset(request.uri()) {
 				let encoding = encodings.first().cloned()
 					.unwrap_or(Encoding::Uncompressed);
 
