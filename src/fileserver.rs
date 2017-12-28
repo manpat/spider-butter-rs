@@ -18,7 +18,7 @@ const MAX_PENDING_CONNECTIONS_PER_THREAD: usize = 128;
 const NUM_WORKER_THREADS: usize = 4;
 
 pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
-	let mut mappings = Arc::new(Mappings::new());
+	let mut mappings = Arc::new(Mappings::new(false));
 	let mut tx_list = Vec::new();
 
 	let coro_threads = {
@@ -169,12 +169,16 @@ fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<
 	})
 }
 
-fn send_data_async(mut stream: TcpStream, data: Arc<CachedFile>, encoding: Encoding) -> Coro<io::Result<()>> {
+fn send_data_async(mut stream: TcpStream, data: Arc<MappedAsset>, encoding: Encoding) -> Coro<io::Result<()>> {
 	use std::io::ErrorKind::{WouldBlock, Interrupted};
 
-	let body = data.get_encoding(encoding).iter().cloned().collect::<Vec<_>>();
-
 	Coro::from(move || {
+		let body = data.get_encoding(encoding);
+		let body = match body {
+			Err(e) => {yield Err(e); return},
+			Ok(v) => v,
+		};
+
 		let mut res = http::Response::new("HTTP/1.1 200 OK");
 
 		match encoding {

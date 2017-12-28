@@ -1,4 +1,5 @@
 #![feature(generators, generator_trait)]
+#![feature(refcell_replace_swap)]
 #![feature(specialization)]
 #![feature(box_syntax)]
 #![feature(libc)]
@@ -10,8 +11,9 @@ extern crate libc;
 use std::net::TcpListener;
 
 use inotify::{event_mask, watch_mask, Inotify};
-use std::thread;
 use std::sync::mpsc;
+use std::thread;
+use std::env;
 
 mod fileserver;
 mod coro_util;
@@ -31,7 +33,14 @@ fn main() {
 	let fs_listener = TcpListener::bind("0.0.0.0:8000").unwrap();
 	let (mapping_tx, mapping_rx) = mpsc::channel();
 
-	match Mappings::from_file(MAPPINGS_FILENAME) {
+	let caching_enabled = env::args().all(|a| a != "no_cache");
+
+	println!("Running...");
+	if !caching_enabled {
+		println!("Caching disabled!");
+	}
+
+	match Mappings::from_file(MAPPINGS_FILENAME, caching_enabled) {
 		Ok(mappings) => {
 			mapping_tx.send(mappings).unwrap();
 			println!("Done.");
@@ -56,7 +65,7 @@ fn main() {
 		if mapping_file_changed {
 			println!("Updating mappings...");
 
-			match Mappings::from_file(MAPPINGS_FILENAME) {
+			match Mappings::from_file(MAPPINGS_FILENAME, caching_enabled) {
 				Ok(mappings) => {
 					mapping_tx.send(mappings).unwrap();
 					println!("Done.");
