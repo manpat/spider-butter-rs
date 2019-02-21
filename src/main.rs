@@ -1,6 +1,7 @@
 #![feature(generators, generator_trait)]
 #![feature(refcell_replace_swap)]
 #![feature(specialization)]
+#![feature(rustc_private)]
 #![feature(box_syntax)]
 #![feature(libc)]
 
