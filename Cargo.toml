@@ -10,6 +10,7 @@ inotify = "0.4"
 flate2 = "1.0.1"
 libc = "*"
 structopt = "0.2"
+failure = "0.1.1"
 
 [dependencies.acme-client]
 version = "0.5"

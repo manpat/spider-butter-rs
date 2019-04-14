@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::fs;
 
 use std::sync::Arc;
+
+use crate::SBResult;
 
 use flate2::Compression;
 use flate2::write::{GzEncoder, DeflateEncoder};
@@ -18,7 +20,7 @@ pub enum Encoding {
 }
 
 pub trait MappedAsset {
-	fn get_encoding(&self, _: Encoding) -> io::Result<Vec<u8>>;
+	fn get_encoding(&self, _: Encoding) -> SBResult<Vec<u8>>;
 }
 
 struct PreprocessedAsset {
@@ -48,7 +50,7 @@ impl Mappings {
 		}
 	}
 
-	pub fn from_file(path: &str, caching_enabled: bool) -> io::Result<Mappings> {
+	pub fn from_file(path: &str, caching_enabled: bool) -> crate::SBResult<Mappings> {
 		let mut file = fs::File::open(path)?;
 		let mut contents = String::new();
 		file.read_to_string(&mut contents)?;
@@ -62,7 +64,18 @@ impl Mappings {
 		Ok(mps)
 	}
 
-	fn load_from(&mut self, data: &str, prefix: &Path) -> io::Result<()> {
+	pub fn insert_data_mapping<T>(&mut self, key: &str, data: T) -> crate::SBResult<()>
+		where T: Into<Vec<u8>> {
+
+		let asset = PreprocessedAsset::process(data.into())?;
+
+		self.file_cache.insert(key.into(), Arc::new(asset));
+		self.mappings.insert(key.into(), key.into());
+
+		Ok(())
+	} 
+
+	fn load_from(&mut self, data: &str, prefix: &Path) -> SBResult<()> {
 		let iter = data.lines()
 			.map(|s| s.trim())
 			.filter(|s| !s.is_empty() && !s.starts_with('#'));
@@ -108,7 +121,7 @@ impl Mappings {
 	}
 
 	// TODO: Add inotify watches to assets
-	fn process_mapped_assets(&mut self) -> io::Result<()> {
+	fn process_mapped_assets(&mut self) -> SBResult<()> {
 		use std::collections::hash_map::Entry;
 		use std::time::Instant;
 
@@ -135,25 +148,27 @@ impl Mappings {
 				}
 			}
 
-			let compression = Compression::best();
+			// let compression = Compression::best();
 
-			let mut enc = GzEncoder::new(Vec::new(), compression);
-			enc.write_all(&uncompressed_data)?;
-			let gzipped_data = enc.finish()?;
+			// let mut enc = GzEncoder::new(Vec::new(), compression);
+			// enc.write_all(&uncompressed_data)?;
+			// let gzipped_data = enc.finish()?;
 
-			let mut enc = DeflateEncoder::new(Vec::new(), compression);
-			enc.write_all(&uncompressed_data)?;
-			let deflated_data = enc.finish()?;
+			// let mut enc = DeflateEncoder::new(Vec::new(), compression);
+			// enc.write_all(&uncompressed_data)?;
+			// let deflated_data = enc.finish()?;
 
-			println!("        {:.1}kB", uncompressed_data.len() as f32 / 2.0f32.powi(10));
-			println!("gzip -> {:.1}kB", gzipped_data.len() as f32 / 2.0f32.powi(10));
-			println!("defl -> {:.1}kB", gzipped_data.len() as f32 / 2.0f32.powi(10));
+			// println!("        {:.1}kB", uncompressed_data.len() as f32 / 2.0f32.powi(10));
+			// println!("gzip -> {:.1}kB", gzipped_data.len() as f32 / 2.0f32.powi(10));
+			// println!("defl -> {:.1}kB", gzipped_data.len() as f32 / 2.0f32.powi(10));
 
-			entry.or_insert(Arc::new(PreprocessedAsset{
-				uncompressed_data,
-				deflated_data,
-				gzipped_data
-			}));
+			// entry.or_insert(Arc::new(PreprocessedAsset{
+			// 	uncompressed_data,
+			// 	deflated_data,
+			// 	gzipped_data
+			// }));
+
+			entry.or_insert(Arc::new(PreprocessedAsset::process(uncompressed_data)?));
 		}
 
 		println!("Compression finished in {}s {:.2}ms",
@@ -183,8 +198,30 @@ impl Mappings {
 	}
 }
 
+
+impl PreprocessedAsset {
+	fn process(uncompressed_data: Vec<u8>) -> SBResult<PreprocessedAsset> {
+		let compression = Compression::best();
+
+		let mut enc = GzEncoder::new(Vec::new(), compression);
+		enc.write_all(&uncompressed_data)?;
+		let gzipped_data = enc.finish()?;
+
+		let mut enc = DeflateEncoder::new(Vec::new(), compression);
+		enc.write_all(&uncompressed_data)?;
+		let deflated_data = enc.finish()?;
+
+		Ok(PreprocessedAsset {
+			uncompressed_data,
+			deflated_data,
+			gzipped_data
+		})
+	}
+}
+
+
 impl MappedAsset for PreprocessedAsset {
-	fn get_encoding(&self, encoding: Encoding) -> io::Result<Vec<u8>> {
+	fn get_encoding(&self, encoding: Encoding) -> SBResult<Vec<u8>> {
 		match encoding {
 			Encoding::Uncompressed => Ok(self.uncompressed_data.clone()),
 			Encoding::Deflate => Ok(self.deflated_data.clone()),
@@ -194,7 +231,7 @@ impl MappedAsset for PreprocessedAsset {
 }
 
 impl MappedAsset for UnprocessedAsset {
-	fn get_encoding(&self, encoding: Encoding) -> io::Result<Vec<u8>> {
+	fn get_encoding(&self, encoding: Encoding) -> SBResult<Vec<u8>> {
 		let mut uncompressed_data = Vec::new();
 
 		println!("Processing {:?}", &self.file_path.as_path());

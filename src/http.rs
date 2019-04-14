@@ -1,10 +1,9 @@
 extern crate std;
 
 use std::net::TcpStream;
-use std::io;
-use std::option::Option;
 use std::collections::HashMap;
 use crate::coro_util::*;
+use crate::SBResult;
 
 #[derive(Debug)]
 pub struct Request<'a> {
@@ -91,7 +90,7 @@ impl<'a> Response<'a> {
 		response_str
 	}
 
-	pub fn write_to_stream(&self, stream: &mut TcpStream) -> io::Result<()> {
+	pub fn write_to_stream(&self, stream: &mut TcpStream) -> SBResult<()> {
 		use std::io::Write;
 
 		let response_str = self.header_string();
@@ -101,7 +100,7 @@ impl<'a> Response<'a> {
 		Ok(())
 	}
 
-	pub fn write_header_async(self, mut stream: TcpStream) -> Coro<io::Result<()>> {
+	pub fn write_header_async(self, mut stream: TcpStream) -> Coro<SBResult<()>> {
 		use std::io::Write;
 		use std::io::ErrorKind::WouldBlock;
 
@@ -112,7 +111,7 @@ impl<'a> Response<'a> {
 				let res = stream.write_all(response_str.as_bytes());
 				yield match res {
 					Err(ref e) if e.kind() == WouldBlock => Ok(()),
-					Err(e) => Err(e),
+					Err(e) => Err(e.into()),
 					Ok(_) => break,
 				};
 			}

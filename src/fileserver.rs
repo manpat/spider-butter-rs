@@ -4,9 +4,10 @@ use std::io::{Write, Read};
 use std::thread;
 use std::time;
 use std::str;
-use std::io;
 
 use std::sync::Arc;
+
+use crate::SBResult;
 
 use crate::coro_util::*;
 use crate::tcp_util::*;
@@ -160,7 +161,7 @@ fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<
 
 		for res in coro {
 			if let Err(e) = res {
-				println!("Error sending data: {:?}", e.kind());
+				println!("Error sending data: {:?}", e);
 				return
 			}
 
@@ -169,7 +170,7 @@ fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<
 	})
 }
 
-fn send_data_async(mut stream: TcpStream, data: Arc<MappedAsset>, encoding: Encoding) -> Coro<io::Result<()>> {
+fn send_data_async(mut stream: TcpStream, data: Arc<MappedAsset>, encoding: Encoding) -> Coro<SBResult<()>> {
 	use std::io::ErrorKind::{WouldBlock, Interrupted};
 
 	Coro::from(move || {
@@ -195,7 +196,7 @@ fn send_data_async(mut stream: TcpStream, data: Arc<MappedAsset>, encoding: Enco
 			yield match result {
 				Err(ref e) if e.kind() == WouldBlock => Ok(()),
 				Err(ref e) if e.kind() == Interrupted => Ok(()),
-				Err(e) => Err(e),
+				Err(e) => Err(e.into()),
 				Ok(sz) => {
 					read_amt += sz;
 					if read_amt >= response_head.len() { break }
@@ -212,7 +213,7 @@ fn send_data_async(mut stream: TcpStream, data: Arc<MappedAsset>, encoding: Enco
 			yield match result {
 				Err(ref e) if e.kind() == WouldBlock => Ok(()),
 				Err(ref e) if e.kind() == Interrupted => Ok(()),
-				Err(e) => Err(e),
+				Err(e) => Err(e.into()),
 				Ok(sz) => {
 					read_amt += sz;
 					if read_amt >= body.len() { break }
