@@ -1,6 +1,5 @@
 use std::net::TcpStream;
 use std::os::unix::io::AsRawFd;
-use libc::*;
 
 pub trait TcpStreamExt {
 	fn has_pending_writes(&self) -> bool;
@@ -13,7 +12,7 @@ impl TcpStreamExt for TcpStream {
 			let fd = self.as_raw_fd();
 
 			let mut pending = 0i32;
-			let ret = ioctl(fd, TIOCOUTQ, &mut pending as *mut i32);
+			let ret = libc::ioctl(fd, libc::TIOCOUTQ, &mut pending as *mut i32);
 			assert!(ret >= 0);
 
 			pending > 0
@@ -25,7 +24,7 @@ impl TcpStreamExt for TcpStream {
 			let fd = self.as_raw_fd();
 
 			let mut pending = 0i32;
-			let ret = ioctl(fd, TIOCINQ, &mut pending as *mut i32);
+			let ret = libc::ioctl(fd, libc::TIOCINQ, &mut pending as *mut i32);
 			assert!(ret >= 0);
 
 			pending > 0

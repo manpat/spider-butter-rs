@@ -4,7 +4,7 @@ use std::net::TcpStream;
 use std::io;
 use std::option::Option;
 use std::collections::HashMap;
-use coro_util::*;
+use crate::coro_util::*;
 
 #[derive(Debug)]
 pub struct Request<'a> {

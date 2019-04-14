@@ -1,20 +1,12 @@
 #![feature(generators, generator_trait)]
-#![feature(refcell_replace_swap)]
 #![feature(specialization)]
-#![feature(rustc_private)]
-#![feature(box_syntax)]
-#![feature(libc)]
 
-extern crate inotify;
-extern crate flate2;
-extern crate libc;
+use structopt::StructOpt;
+use inotify::{event_mask, watch_mask, Inotify};
 
 use std::net::TcpListener;
-
-use inotify::{event_mask, watch_mask, Inotify};
 use std::sync::mpsc;
 use std::thread;
-use std::env;
 
 mod fileserver;
 mod coro_util;
@@ -22,26 +14,41 @@ mod tcp_util;
 mod http;
 
 mod mappings;
-use mappings::*;
+use crate::mappings::*;
+
+#[derive(Debug, StructOpt)]
+#[structopt( raw(setting="structopt::clap::AppSettings::ColoredHelp") )]
+struct Opts {
+	/// Load and compress resources as they're requested instead of ahead of time
+	#[structopt(short, long)]
+	nocache: bool,
+
+	// /// Serve everything in the current working directory
+	// #[structopt(short, long)]
+	// local: bool,
+
+	#[structopt(short, long, default_value="8000")]
+	port: u16,
+}
 
 fn main() {
+	let opts = Opts::from_args();
+
 	let mut inotify = Inotify::init().expect("Inotify init failed");
 	let current_dir = std::env::current_dir().expect("Failed to determine current directory");
 
 	inotify.add_watch(current_dir, watch_mask::MODIFY)
 		.expect("Failed to add inotify watch");
 
-	let fs_listener = TcpListener::bind("0.0.0.0:8000").unwrap();
+	let fs_listener = TcpListener::bind(("0.0.0.0", opts.port)).unwrap();
 	let (mapping_tx, mapping_rx) = mpsc::channel();
 
-	let caching_enabled = env::args().all(|a| a != "no_cache");
-
 	println!("Running...");
-	if !caching_enabled {
+	if opts.nocache {
 		println!("Caching disabled!");
 	}
 
-	match Mappings::from_file(MAPPINGS_FILENAME, caching_enabled) {
+	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
 		Ok(mappings) => {
 			mapping_tx.send(mappings).unwrap();
 			println!("Done.");
@@ -66,7 +73,7 @@ fn main() {
 		if mapping_file_changed {
 			println!("Updating mappings...");
 
-			match Mappings::from_file(MAPPINGS_FILENAME, caching_enabled) {
+			match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
 				Ok(mappings) => {
 					mapping_tx.send(mappings).unwrap();
 					println!("Done.");

@@ -8,10 +8,10 @@ use std::io;
 
 use std::sync::Arc;
 
-use coro_util::*;
-use tcp_util::*;
-use mappings::*;
-use http;
+use crate::coro_util::*;
+use crate::tcp_util::*;
+use crate::mappings::*;
+use crate::http;
 
 const MAX_CONCURRENT_CONNECTIONS_PER_THREAD: usize = 128;
 const MAX_PENDING_CONNECTIONS_PER_THREAD: usize = 128;

@@ -18,7 +18,7 @@ pub enum Encoding {
 }
 
 pub trait MappedAsset {
-	fn get_encoding(&self, Encoding) -> io::Result<Vec<u8>>;
+	fn get_encoding(&self, _: Encoding) -> io::Result<Vec<u8>>;
 }
 
 struct PreprocessedAsset {
@@ -82,7 +82,7 @@ impl Mappings {
 			let (key, value) = mapping.split_at(partition.unwrap());
 			let (key, value) = (key.trim_end(), value[2..].trim_start());
 
-			let mut path = [prefix, Path::new(value)].iter().collect();
+			let path = [prefix, Path::new(value)].iter().collect();
 
 			println!("Adding mapping {} => {:?}", key, path);
 			self.mappings.insert(key.to_owned(), path);
