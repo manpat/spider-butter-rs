@@ -80,7 +80,7 @@ impl Mappings {
 			}
 
 			let (key, value) = mapping.split_at(partition.unwrap());
-			let (key, value) = (key.trim_right(), value[2..].trim_left());
+			let (key, value) = (key.trim_end(), value[2..].trim_start());
 
 			let mut path = [prefix, Path::new(value)].iter().collect();
 

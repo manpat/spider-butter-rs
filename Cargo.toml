@@ -6,3 +6,7 @@ authors = ["manpat <pat@patsown.com>"]
 [dependencies]
 inotify = "0.4"
 flate2 = "1.0.1"
+
+[dependencies.acme-client]
+version = "0.5"
+default-features = false
