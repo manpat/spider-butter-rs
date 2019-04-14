@@ -7,6 +7,9 @@ use std::str;
 
 use std::sync::Arc;
 
+use acme_client::SignedCertificate;
+use acme_client::openssl::ssl::{SslAcceptor, SslMethod};
+
 use crate::SBResult;
 
 use crate::coro_util::*;
@@ -18,7 +21,13 @@ const MAX_CONCURRENT_CONNECTIONS_PER_THREAD: usize = 128;
 const MAX_PENDING_CONNECTIONS_PER_THREAD: usize = 128;
 const NUM_WORKER_THREADS: usize = 4;
 
-pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
+pub enum FileserverCommand {
+	NewMappings(Mappings),
+	SetCert(SignedCertificate),
+	// Close,
+}
+
+pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>) {
 	let mut mappings = Arc::new(Mappings::new(false));
 	let mut tx_list = Vec::new();
 
@@ -33,17 +42,49 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<Mappings>) {
 	};
 
 	let mut tx_iter = tx_list.iter().cycle();
+	let mut ssl_acceptor = None;
 
 	for stream in listener.incoming() {
-		if let Some(new_mappings) = mapping_channel.try_iter().last() {
-			mappings = Arc::new(new_mappings);
+		for command in mapping_channel.try_iter() {
+			match command {
+				FileserverCommand::NewMappings(new_mappings) => {
+					mappings = Arc::new(new_mappings);
+				}
+
+				FileserverCommand::SetCert(cert) => {
+					let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+					builder.set_certificate(cert.cert()).unwrap();
+					builder.set_private_key(cert.pkey()).unwrap();
+					builder.check_private_key().unwrap();
+					ssl_acceptor = Some(builder.build());
+				}
+			}
 		}
 
 		if !stream.is_ok() {
 			continue
 		}
 
-		let coro = start_stream_process(stream.unwrap(), mappings.clone());
+		let stream = stream.unwrap();
+
+		let coro = if let Some(acceptor) = ssl_acceptor.as_ref() {
+			let tls_stream = acceptor.accept(stream).unwrap();
+
+			if let Err(e) = tls_stream.get_ref().set_nonblocking(true) {
+				println!("[fsrv] set_nonblocking failed: {}", e);
+				continue
+			}
+
+			start_stream_process(tls_stream, mappings.clone())
+		} else {
+			if let Err(e) = stream.set_nonblocking(true) {
+				println!("[fsrv] set_nonblocking failed: {}", e);
+				continue
+			}
+
+			start_stream_process(stream, mappings.clone())
+		};
+
 		tx_iter.next().unwrap()
 			.send(coro).unwrap();
 	}
@@ -86,13 +127,8 @@ fn continuation_thread(rx: Receiver<Coro<()>>) {
 	}
 }
 
-fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<()> {
+fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>) -> Coro<()> where S: Read + Write + TcpStreamExt + 'static {
 	Coro::from(move || {
-		if let Err(e) = stream.set_nonblocking(true) {
-			println!("[fsrv] set_nonblocking failed: {}", e);
-			return;
-		}
-
 		let coro = {
 			let mut buf = [0u8; 8<<10];
 			let mut read_wait_timeout = 0;
@@ -170,7 +206,7 @@ fn start_stream_process(mut stream: TcpStream, mappings: Arc<Mappings>) -> Coro<
 	})
 }
 
-fn send_data_async(mut stream: TcpStream, data: Arc<MappedAsset>, encoding: Encoding) -> Coro<SBResult<()>> {
+fn send_data_async<S>(mut stream: S, data: Arc<MappedAsset>, encoding: Encoding) -> Coro<SBResult<()>> where S: Read + Write + TcpStreamExt + 'static {
 	use std::io::ErrorKind::{WouldBlock, Interrupted};
 
 	Coro::from(move || {

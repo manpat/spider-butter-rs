@@ -1,5 +1,6 @@
 extern crate std;
 
+use std::io::Write;
 use std::net::TcpStream;
 use std::collections::HashMap;
 use crate::coro_util::*;
@@ -90,9 +91,7 @@ impl<'a> Response<'a> {
 		response_str
 	}
 
-	pub fn write_to_stream(&self, stream: &mut TcpStream) -> SBResult<()> {
-		use std::io::Write;
-
+	pub fn write_to_stream<S>(&self, stream: &mut S) -> SBResult<()> where S: Write + 'static {
 		let response_str = self.header_string();
 
 		stream.write_all(response_str.as_bytes())?;
@@ -100,8 +99,7 @@ impl<'a> Response<'a> {
 		Ok(())
 	}
 
-	pub fn write_header_async(self, mut stream: TcpStream) -> Coro<SBResult<()>> {
-		use std::io::Write;
+	pub fn write_header_async<S>(self, mut stream: S) -> Coro<SBResult<()>> where S: Write + 'static {
 		use std::io::ErrorKind::WouldBlock;
 
 		let response_str = self.header_string();

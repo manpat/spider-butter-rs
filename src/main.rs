@@ -4,6 +4,8 @@
 use structopt::StructOpt;
 use inotify::{event_mask, watch_mask, Inotify};
 
+use acme_client::SignedCertificate;
+
 use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
@@ -15,8 +17,11 @@ mod http;
 
 mod mappings;
 use crate::mappings::*;
+use crate::fileserver::FileserverCommand;
 
 pub type SBResult<T> = Result<T, failure::Error>;
+
+const CERT_FILENAME: &'static str = "certificate.pem";
 
 
 #[derive(Debug, StructOpt)]
@@ -30,12 +35,21 @@ struct Opts {
 	// #[structopt(short, long)]
 	// local: bool,
 
+	/// Port to use for unencrypted connections
 	#[structopt(short, long, default_value="8000")]
 	port: u16,
 
 	/// Encrypt connections and attempt to request a certificate
 	#[structopt(short, long)]
 	secure: bool,
+
+	/// Port to use for encrypted connections
+	#[structopt(short, long, default_value="8001")]
+	tls_port: u16,
+
+	/// Use letsencrypt staging API so you don't get ratelimited
+	#[structopt(long)]
+	staging: bool,
 
 	/// Domains to try and request certificates for
 	#[structopt(short, long)]
@@ -44,7 +58,6 @@ struct Opts {
 
 fn main() -> SBResult<()> {
 	let opts = Opts::from_args();
-	println!("{:?}", opts);
 
 	let mut inotify = Inotify::init().expect("Inotify init failed");
 	let current_dir = std::env::current_dir().expect("Failed to determine current directory");
@@ -53,22 +66,33 @@ fn main() -> SBResult<()> {
 		.expect("Failed to add inotify watch");
 
 	let fs_listener = TcpListener::bind(("0.0.0.0", opts.port)).unwrap();
-	let (mapping_tx, mapping_rx) = mpsc::channel();
+	let (mut fs_command_tx, fs_command_rx) = mpsc::channel();
 
 	println!("Running...");
 	if opts.nocache {
 		println!("Caching disabled!");
 	}
 
-	thread::spawn(move || fileserver::start(fs_listener, mapping_rx));
+	thread::spawn(move || fileserver::start(fs_listener, fs_command_rx));
 
 	if opts.secure {
-		try_get_certificates(&opts, &mapping_tx)?;
+		let cert = try_get_certificates(&opts, &fs_command_tx)?;
+		cert.save_signed_certificate(CERT_FILENAME)
+			.map_err(acme_err_to_failure)?;
+
+		let sfs_listener = TcpListener::bind(("0.0.0.0", opts.tls_port)).unwrap();
+		let (sfs_command_tx, sfs_command_rx) = mpsc::channel();
+
+		sfs_command_tx.send(FileserverCommand::SetCert(cert)).unwrap();
+
+		thread::spawn(move || fileserver::start(sfs_listener, sfs_command_rx));
+
+		fs_command_tx = sfs_command_tx;
 	}
 
 	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
 		Ok(mappings) => {
-			mapping_tx.send(mappings).unwrap();
+			fs_command_tx.send(FileserverCommand::NewMappings(mappings)).unwrap();
 			println!("Done.");
 		}
 
@@ -91,7 +115,7 @@ fn main() -> SBResult<()> {
 
 			match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
 				Ok(mappings) => {
-					mapping_tx.send(mappings).unwrap();
+					fs_command_tx.send(FileserverCommand::NewMappings(mappings)).unwrap();
 					println!("Done.");
 				}
 
@@ -109,16 +133,21 @@ fn acme_err_to_failure(err: acme_client::error::Error) -> failure::Error {
 }
 
 
-fn try_get_certificates(opts: &Opts, mapping_tx: &mpsc::Sender<Mappings>) -> SBResult<()> {
+fn try_get_certificates(opts: &Opts, fs_command_tx: &mpsc::Sender<FileserverCommand>) -> SBResult<SignedCertificate> {
 	use acme_client::Directory;
 
-	let directory = Directory::lets_encrypt()
-		.map_err(acme_err_to_failure)?;
+	let directory = if opts.staging {
+		Directory::from_url("https://acme-staging.api.letsencrypt.org/directory").map_err(acme_err_to_failure)?
+	} else {
+		Directory::lets_encrypt().map_err(acme_err_to_failure)?
+	};
 
 	let account = directory
 		.account_registration()
 		.register()
 		.map_err(acme_err_to_failure)?;
+
+	let _ = account.revoke_certificate_from_file(CERT_FILENAME);
 
 	assert!(opts.domains.len() > 0);
 
@@ -141,13 +170,13 @@ fn try_get_certificates(opts: &Opts, mapping_tx: &mpsc::Sender<Mappings>) -> SBR
 		println!(" - token:    {}", http_challenge.token());
 		println!(" - key_auth: {}", http_challenge.key_authorization());
 
-		let path = format!(".well-known/acme-challenge/{}", http_challenge.token());
+		let path = format!("/.well-known/acme-challenge/{}", http_challenge.token());
 
 		mapping.insert_data_mapping(&path, http_challenge.key_authorization())?;
 		challenges.push(http_challenge);
 	}
 
-	mapping_tx.send(mapping)?;
+	fs_command_tx.send(FileserverCommand::NewMappings(mapping))?;
 	thread::sleep(std::time::Duration::from_millis(500));
 
 	println!("Validating...");
@@ -163,15 +192,7 @@ fn try_get_certificates(opts: &Opts, mapping_tx: &mpsc::Sender<Mappings>) -> SBR
 		.map(String::as_str)
 		.collect::<Vec<_>>();
 
-	let cert = account.certificate_signer(&domain_refs)
+	account.certificate_signer(&domain_refs)
 		.sign_certificate()
-		.map_err(acme_err_to_failure)?;
-
-	let private_key = cert.pkey().private_key_to_pem_pkcs8()?;
-	let public_key = cert.cert().to_pem()?;
-
-	println!("{:?}", private_key);
-	println!("{:?}", public_key);
-
-	Ok(())
+		.map_err(acme_err_to_failure)
 }
