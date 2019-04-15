@@ -177,7 +177,6 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 				let mut res = http::Response::new("HTTP/1.1 301 Moved Permanently");
 				let new_location = format!("https://{}{}", request.get("Host").unwrap_or(""), request.uri());
 				res.set("Location", &new_location);
-				println!("{} => {}", request.uri(), new_location);
 				let _ = res.write_to_stream(&mut stream);
 				return;
 			}
