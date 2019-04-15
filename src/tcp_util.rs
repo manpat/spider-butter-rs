@@ -1,10 +1,12 @@
 use std::net::TcpStream;
 use std::os::unix::io::AsRawFd;
 use acme_client::openssl::ssl::SslStream;
+use crate::SBResult;
 
 pub trait TcpStreamExt {
 	fn has_pending_writes(&self) -> bool;
 	fn has_pending_reads(&self) -> bool;
+	fn set_nonblocking(&self, _: bool) -> SBResult<()>;
 }
 
 impl TcpStreamExt for TcpStream {
@@ -31,6 +33,11 @@ impl TcpStreamExt for TcpStream {
 			pending > 0
 		}
 	}
+
+	fn set_nonblocking(&self, nonblock: bool) -> SBResult<()> {
+		(self as &TcpStream).set_nonblocking(nonblock)
+			.map_err(|e| e.into())
+	}
 }
 
 impl TcpStreamExt for SslStream<TcpStream> {
@@ -56,5 +63,10 @@ impl TcpStreamExt for SslStream<TcpStream> {
 
 			pending > 0
 		}
+	}
+
+	fn set_nonblocking(&self, nonblock: bool) -> SBResult<()> {
+		self.get_ref().set_nonblocking(nonblock)
+			.map_err(|e| e.into())
 	}
 }

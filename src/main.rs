@@ -87,6 +87,7 @@ fn main() -> SBResult<()> {
 
 		thread::spawn(move || fileserver::start(sfs_listener, sfs_command_rx));
 
+		fs_command_tx.send(FileserverCommand::Zombify).unwrap();
 		fs_command_tx = sfs_command_tx;
 	}
 

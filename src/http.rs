@@ -1,7 +1,4 @@
-extern crate std;
-
 use std::io::Write;
-use std::net::TcpStream;
 use std::collections::HashMap;
 use crate::coro_util::*;
 use crate::SBResult;

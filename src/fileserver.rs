@@ -1,4 +1,4 @@
-use std::net::{TcpStream, TcpListener};
+use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver};
 use std::io::{Write, Read};
 use std::thread;
@@ -24,6 +24,7 @@ const NUM_WORKER_THREADS: usize = 4;
 pub enum FileserverCommand {
 	NewMappings(Mappings),
 	SetCert(SignedCertificate),
+	Zombify,
 	// Close,
 }
 
@@ -43,6 +44,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 
 	let mut tx_iter = tx_list.iter().cycle();
 	let mut ssl_acceptor = None;
+	let mut zombie_mode = false;
 
 	for stream in listener.incoming() {
 		for command in mapping_channel.try_iter() {
@@ -58,6 +60,10 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 					builder.check_private_key().unwrap();
 					ssl_acceptor = Some(builder.build());
 				}
+
+				FileserverCommand::Zombify => {
+					zombie_mode = true;
+				}
 			}
 		}
 
@@ -68,21 +74,15 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 		let stream = stream.unwrap();
 
 		let coro = if let Some(acceptor) = ssl_acceptor.as_ref() {
-			let tls_stream = acceptor.accept(stream).unwrap();
+			let tls_stream = acceptor.accept(stream);
 
-			if let Err(e) = tls_stream.get_ref().set_nonblocking(true) {
-				println!("[fsrv] set_nonblocking failed: {}", e);
-				continue
+			match tls_stream {
+				Ok(s) => start_stream_process(s, mappings.clone(), zombie_mode),
+				Err(_) => continue,
 			}
 
-			start_stream_process(tls_stream, mappings.clone())
 		} else {
-			if let Err(e) = stream.set_nonblocking(true) {
-				println!("[fsrv] set_nonblocking failed: {}", e);
-				continue
-			}
-
-			start_stream_process(stream, mappings.clone())
+			start_stream_process(stream, mappings.clone(), zombie_mode)
 		};
 
 		tx_iter.next().unwrap()
@@ -127,8 +127,13 @@ fn continuation_thread(rx: Receiver<Coro<()>>) {
 	}
 }
 
-fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>) -> Coro<()> where S: Read + Write + TcpStreamExt + 'static {
+fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: bool) -> Coro<()> where S: Read + Write + TcpStreamExt + 'static {
 	Coro::from(move || {
+		if let Err(e) = stream.set_nonblocking(true) {
+			println!("[fsrv] set_nonblocking failed: {}", e);
+			return
+		}
+
 		let coro = {
 			let mut buf = [0u8; 8<<10];
 			let mut read_wait_timeout = 0;
@@ -166,6 +171,16 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>) -> Coro<()> w
 					return;
 				}
 			};
+
+			if zombie_mode {
+				// TODO: this needs to be made way more robust - way too much trust here
+				let mut res = http::Response::new("HTTP/1.1 301 Moved Permanently");
+				let new_location = format!("https://{}{}", request.get("Host").unwrap_or(""), request.uri());
+				res.set("Location", &new_location);
+				println!("{} => {}", request.uri(), new_location);
+				let _ = res.write_to_stream(&mut stream);
+				return;
+			}
 
 			let mut encodings = request.get("Accept-Encoding")
 				.map(|s| s.split_terminator(',')
