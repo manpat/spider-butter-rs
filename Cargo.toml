@@ -1,6 +1,6 @@
 [package]
 name = "spiderbutter"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2018"
 authors = ["Patrick Monaghan <pat@patsown.com>"]
 description = "A small whitelist based fileserver"
