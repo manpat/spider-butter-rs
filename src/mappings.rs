@@ -33,8 +33,13 @@ struct UnprocessedAsset {
 	file_path: PathBuf,
 }
 
+pub struct Mapping {
+	pub path: PathBuf,
+	pub content_type: Option<String>,
+}
+
 pub struct Mappings {
-	mappings: HashMap<String, PathBuf>,
+	mappings: HashMap<String, Mapping>,
 	imported_mappings: Vec<PathBuf>,
 	file_cache: HashMap<PathBuf, Arc<PreprocessedAsset>>,
 	caching_enabled: bool,
@@ -68,9 +73,10 @@ impl Mappings {
 		where T: Into<Vec<u8>> {
 
 		let asset = PreprocessedAsset::process(data.into())?;
+		let content_type = None;
 
 		self.file_cache.insert(key.into(), Arc::new(asset));
-		self.mappings.insert(key.into(), key.into());
+		self.mappings.insert(key.into(), Mapping{ path: key.into(), content_type });
 
 		Ok(())
 	} 
@@ -95,10 +101,23 @@ impl Mappings {
 			let (key, value) = mapping.split_at(partition.unwrap());
 			let (key, value) = (key.trim_end(), value[2..].trim_start());
 
+			// extract content type
+			let (value, content_type) = if let Some(pos) = value.find('[') {
+				let (value, type_start) = value.split_at(pos);
+				let content_type = type_start[1..].split(']').next().unwrap();
+				(value.trim(), Some(content_type.trim().into()))
+			} else {
+				(value, None)
+			};
+
 			let path = [prefix, Path::new(value)].iter().collect();
 
-			println!("Adding mapping {} => {:?}", key, path);
-			self.mappings.insert(key.to_owned(), path);
+			if let Some(content_type) = &content_type {
+				println!("Adding mapping {} => {:?} [{}]", key, path, content_type);
+			} else {
+				println!("Adding mapping {} => {:?}", key, path);
+			}
+			self.mappings.insert(key.to_owned(), Mapping{ path, content_type });
 		}
 
 		self.imported_mappings.extend(imports.iter().map(From::from));
@@ -128,7 +147,7 @@ impl Mappings {
 		println!("Compressing mapped assets...");
 		let timer = Instant::now();
 
-		for path in self.mappings.values() {
+		for Mapping{path, ..} in self.mappings.values() {
 			let entry = self.file_cache.entry(path.clone());
 
 			if let Entry::Occupied(_) = entry { continue; }
@@ -148,26 +167,6 @@ impl Mappings {
 				}
 			}
 
-			// let compression = Compression::best();
-
-			// let mut enc = GzEncoder::new(Vec::new(), compression);
-			// enc.write_all(&uncompressed_data)?;
-			// let gzipped_data = enc.finish()?;
-
-			// let mut enc = DeflateEncoder::new(Vec::new(), compression);
-			// enc.write_all(&uncompressed_data)?;
-			// let deflated_data = enc.finish()?;
-
-			// println!("        {:.1}kB", uncompressed_data.len() as f32 / 2.0f32.powi(10));
-			// println!("gzip -> {:.1}kB", gzipped_data.len() as f32 / 2.0f32.powi(10));
-			// println!("defl -> {:.1}kB", gzipped_data.len() as f32 / 2.0f32.powi(10));
-
-			// entry.or_insert(Arc::new(PreprocessedAsset{
-			// 	uncompressed_data,
-			// 	deflated_data,
-			// 	gzipped_data
-			// }));
-
 			entry.or_insert(Arc::new(PreprocessedAsset::process(uncompressed_data)?));
 		}
 
@@ -178,22 +177,18 @@ impl Mappings {
 		Ok(())
 	}
 
-	pub fn get_route(&self, key: &str) -> Option<&PathBuf> {
+	pub fn get_route(&self, key: &str) -> Option<&Mapping> {
 		self.mappings.get(key)
 	}
 
-	pub fn get_asset(&self, key: &str) -> Option<Arc<MappedAsset>> {
-		let route = self.get_route(key);
-
+	pub fn get_asset(&self, route: &PathBuf) -> Option<Arc<MappedAsset>> {
 		if self.caching_enabled {
-			route.iter()
-				.filter_map(|&k| self.file_cache.get(k))
+			self.file_cache.get(route)
 				.cloned()
-				.next()
 				.map(|a| a as Arc<MappedAsset>)
+
 		} else {
-			route.cloned()
-				.map(|file_path| Arc::new(UnprocessedAsset {file_path}) as Arc<MappedAsset>)
+			Some(Arc::new(UnprocessedAsset {file_path: route.clone()}) as Arc<MappedAsset>)
 		}
 	}
 }

@@ -198,11 +198,15 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 				_ => 10,
 			});
 
-			if let Some(asset) = mappings.get_asset(request.uri()) {
+			let route = mappings.get_route(request.uri());
+
+			if let Some((asset, content_type)) = route.and_then( |r| Some((mappings.get_asset(&r.path)?, &r.content_type)) ) {
 				let encoding = encodings.first().cloned()
 					.unwrap_or(Encoding::Uncompressed);
 
-				send_data_async(stream, asset, encoding)
+				let content_type = content_type.as_ref().map(String::clone);
+
+				send_data_async(stream, asset, encoding, content_type)
 			} else {
 				http::Response::new("HTTP/1.1 404 File not found")
 					.write_header_async(stream)
@@ -220,7 +224,7 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 	})
 }
 
-fn send_data_async<S>(mut stream: S, data: Arc<MappedAsset>, encoding: Encoding) -> Coro<SBResult<()>> where S: Read + Write + TcpStreamExt + 'static {
+fn send_data_async<S>(mut stream: S, data: Arc<dyn MappedAsset>, encoding: Encoding, content_type: Option<String>) -> Coro<SBResult<()>> where S: Read + Write + TcpStreamExt + 'static {
 	use std::io::ErrorKind::{WouldBlock, Interrupted};
 
 	Coro::from(move || {
@@ -236,6 +240,10 @@ fn send_data_async<S>(mut stream: S, data: Arc<MappedAsset>, encoding: Encoding)
 			Encoding::Uncompressed => {},
 			Encoding::Gzip => res.set("Content-Encoding", "gzip"),
 			Encoding::Deflate => res.set("Content-Encoding", "deflate"),
+		}
+
+		if let Some(content_type) = content_type.as_ref() {
+			res.set("Content-Type", content_type);
 		}
 
 		let response_head = res.header_string().into_bytes();
