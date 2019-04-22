@@ -55,7 +55,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 
 				FileserverCommand::SetCert(cert) => {
 					let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-					builder.set_certificate(cert.cert()).unwrap();
+					builder.set_certificate_chain_file(crate::CHAIN_CERT_FILENAME).unwrap();
 					builder.set_private_key(cert.pkey()).unwrap();
 					builder.check_private_key().unwrap();
 					ssl_acceptor = Some(builder.build());

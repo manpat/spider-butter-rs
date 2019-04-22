@@ -21,7 +21,8 @@ use crate::fileserver::FileserverCommand;
 
 pub type SBResult<T> = Result<T, failure::Error>;
 
-const CERT_FILENAME: &'static str = "certificate.pem";
+pub const CERT_FILENAME: &'static str = "certificate.pem";
+pub const CHAIN_CERT_FILENAME: &'static str = "certificate_chain.pem";
 
 
 #[derive(Debug, StructOpt)]
@@ -77,7 +78,7 @@ fn main() -> SBResult<()> {
 
 	if opts.secure {
 		let cert = try_get_certificates(&opts, &fs_command_tx)?;
-		cert.save_signed_certificate(CERT_FILENAME)
+		cert.save_signed_certificate_and_chain(None, CERT_FILENAME)
 			.map_err(acme_err_to_failure)?;
 
 		let sfs_listener = TcpListener::bind(("0.0.0.0", opts.tls_port)).unwrap();
