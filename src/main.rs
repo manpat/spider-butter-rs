@@ -76,11 +76,11 @@ fn main() -> SBResult<()> {
 		let sfs_listener = TcpListener::bind(("0.0.0.0", opts.tls_port)).unwrap();
 		let (sfs_command_tx, sfs_command_rx) = mpsc::channel();
 
-		fs_command_tx.send(FileserverCommand::Zombify).unwrap();
-		fs_command_tx = sfs_command_tx.clone();
-
 		thread::spawn(move || fileserver::start(sfs_listener, sfs_command_rx));
-		start_autorenew_thread(opts.domains, fs_command_tx.clone(), sfs_command_tx, opts.staging);
+		start_autorenew_thread(opts.domains, fs_command_tx.clone(), sfs_command_tx.clone(), opts.staging);
+
+		fs_command_tx.send(FileserverCommand::Zombify).unwrap();
+		fs_command_tx = sfs_command_tx;
 	}
 
 	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
