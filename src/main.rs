@@ -78,7 +78,10 @@ fn main() -> SBResult<()> {
 
 	if opts.secure {
 		let cert = try_get_certificates(&opts, &fs_command_tx)?;
-		cert.save_signed_certificate_and_chain(None, CERT_FILENAME)
+		cert.save_signed_certificate(CERT_FILENAME)
+			.map_err(acme_err_to_failure)?;
+
+		cert.save_signed_certificate_and_chain(None, CHAIN_CERT_FILENAME)
 			.map_err(acme_err_to_failure)?;
 
 		let sfs_listener = TcpListener::bind(("0.0.0.0", opts.tls_port)).unwrap();
