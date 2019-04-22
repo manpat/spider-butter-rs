@@ -6,12 +6,11 @@ use std::time;
 use std::str;
 
 use std::sync::Arc;
-
-use acme_client::SignedCertificate;
 use acme_client::openssl::ssl::{SslAcceptor, SslMethod};
 
 use crate::SBResult;
 
+use crate::cert::Certificate;
 use crate::coro_util::*;
 use crate::tcp_util::*;
 use crate::mappings::*;
@@ -23,7 +22,7 @@ const NUM_WORKER_THREADS: usize = 4;
 
 pub enum FileserverCommand {
 	NewMappings(Mappings),
-	SetCert(SignedCertificate),
+	SetCert(Certificate),
 	Zombify,
 	// Close,
 }
@@ -55,8 +54,9 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 
 				FileserverCommand::SetCert(cert) => {
 					let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-					builder.set_certificate_chain_file(crate::CHAIN_CERT_FILENAME).unwrap();
-					builder.set_private_key(cert.pkey()).unwrap();
+					builder.set_certificate(cert.certificate()).unwrap();
+					builder.add_extra_chain_cert(cert.intermediate().clone()).unwrap();
+					builder.set_private_key(cert.private_key()).unwrap();
 					builder.check_private_key().unwrap();
 					ssl_acceptor = Some(builder.build());
 				}
@@ -172,7 +172,7 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 				}
 			};
 
-			if zombie_mode {
+			if zombie_mode && !request.uri().contains("/.well-known/acme-challenge") {
 				// TODO: this needs to be made way more robust - way too much trust here
 				let mut res = http::Response::new("HTTP/1.1 301 Moved Permanently");
 				let new_location = format!("https://{}{}", request.get("Host").unwrap_or(""), request.uri());

@@ -110,6 +110,7 @@ impl Mappings {
 				(value, None)
 			};
 
+			// TODO: exclude cert directory
 			let path = [prefix, Path::new(value)].iter().collect();
 
 			if let Some(content_type) = &content_type {
