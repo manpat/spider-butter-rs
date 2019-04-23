@@ -28,9 +28,9 @@ struct Opts {
 	#[structopt(short, long)]
 	nocache: bool,
 
-	// /// Serve everything in the current working directory
-	// #[structopt(short, long)]
-	// local: bool,
+	/// Serve everything in the current working directory
+	#[structopt(short, long)]
+	local: bool,
 
 	/// Port to use for unencrypted connections
 	#[structopt(short, long, default_value="8000")]
@@ -56,11 +56,7 @@ struct Opts {
 fn main() -> SBResult<()> {
 	let opts = Opts::from_args();
 
-	let mut inotify = Inotify::init().expect("Inotify init failed");
 	let current_dir = std::env::current_dir().expect("Failed to determine current directory");
-
-	inotify.add_watch(current_dir, watch_mask::MODIFY)
-		.expect("Failed to add inotify watch");
 
 	let fs_listener = TcpListener::bind(("0.0.0.0", opts.port)).unwrap();
 	let (mut fs_command_tx, fs_command_rx) = mpsc::channel();
@@ -83,9 +79,19 @@ fn main() -> SBResult<()> {
 		fs_command_tx = sfs_command_tx;
 	}
 
+	if opts.local {
+		let mappings = Mappings::from_dir(".".into(), !opts.nocache)?;
+		fs_command_tx.send(FileserverCommand::NewMappings(mappings))?;
+		println!("Done.");
+
+		loop {
+			thread::park();
+		}
+	}
+
 	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
 		Ok(mappings) => {
-			fs_command_tx.send(FileserverCommand::NewMappings(mappings)).unwrap();
+			fs_command_tx.send(FileserverCommand::NewMappings(mappings))?;
 			println!("Done.");
 		}
 
@@ -93,6 +99,10 @@ fn main() -> SBResult<()> {
 			println!("Error: {:?}", err);
 		}
 	}
+
+	let mut inotify = Inotify::init().expect("Inotify init failed");
+	inotify.add_watch(current_dir, watch_mask::MODIFY)
+		.expect("Failed to add inotify watch");
 
 	let mut buffer = [0u8; 4096];
 	loop {

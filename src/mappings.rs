@@ -33,6 +33,7 @@ struct UnprocessedAsset {
 	file_path: PathBuf,
 }
 
+#[derive(Debug)]
 pub struct Mapping {
 	pub path: PathBuf,
 	pub content_type: Option<String>,
@@ -69,6 +70,17 @@ impl Mappings {
 		Ok(mps)
 	}
 
+	pub fn from_dir(path: &str, caching_enabled: bool) -> crate::SBResult<Mappings> {
+		let mut mps = Mappings::new(caching_enabled);
+		mps.walk_directory(Path::new(path))?;
+
+		if caching_enabled {
+			mps.process_mapped_assets()?;
+		}
+
+		Ok(mps)
+	}
+
 	pub fn insert_data_mapping<T>(&mut self, key: &str, data: T) -> crate::SBResult<()>
 		where T: Into<Vec<u8>> {
 
@@ -79,7 +91,33 @@ impl Mappings {
 		self.mappings.insert(key.into(), Mapping{ path: key.into(), content_type });
 
 		Ok(())
-	} 
+	}
+
+	fn walk_directory(&mut self, path: &Path) -> SBResult<()> {
+		for entry in fs::read_dir(path)? {
+			let path = entry?.path();
+
+			if path.is_dir() {
+				self.walk_directory(&path)?;
+
+			} else {
+				let mut path_str = path
+					.strip_prefix("./")
+					.unwrap_or(&path)
+					.to_str()
+					.ok_or_else(|| failure::format_err!("Failed to walk directory"))?
+					.to_owned();
+
+				if path_str.contains(".spiderbutter") { continue }
+
+				path_str.insert(0, '/');
+
+				self.mappings.insert(path_str, Mapping{ path: path.into(), content_type: None });
+			}
+		}
+
+		Ok(())
+	}
 
 	fn load_from(&mut self, data: &str, prefix: &Path) -> SBResult<()> {
 		let iter = data.lines()
