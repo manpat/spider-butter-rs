@@ -8,8 +8,8 @@ use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
 
+#[macro_use] mod coro_util;
 mod fileserver;
-mod coro_util;
 mod tcp_util;
 mod http;
 mod cert;

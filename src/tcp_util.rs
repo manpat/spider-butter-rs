@@ -3,6 +3,9 @@ use std::os::unix::io::AsRawFd;
 use acme_client::openssl::ssl::SslStream;
 use crate::SBResult;
 
+use std::ops::Generator;
+use std::io::Write;
+
 pub trait TcpStreamExt {
 	fn has_pending_writes(&self) -> bool;
 	fn has_pending_reads(&self) -> bool;
@@ -68,5 +71,33 @@ impl TcpStreamExt for SslStream<TcpStream> {
 	fn set_nonblocking(&self, nonblock: bool) -> SBResult<()> {
 		self.get_ref().set_nonblocking(nonblock)
 			.map_err(|e| e.into())
+	}
+}
+
+
+#[must_use]
+pub fn write_async<'a, S>(stream: &'a mut S, bytes: &'a [u8]) -> impl Generator<Yield=(), Return=SBResult<()>> + 'a
+	where S: TcpStreamExt + Write {
+
+	use std::io::ErrorKind::{WouldBlock, Interrupted};
+
+	move || {
+		let mut cursor = 0;
+
+		loop {
+			let result = stream.write(&bytes[cursor..]);
+			match result {
+				Err(ref e) if e.kind() == WouldBlock => yield,
+				Err(ref e) if e.kind() == Interrupted => yield,
+				Err(e) => return Err(e.into()),
+				Ok(sz) => {
+					cursor += sz;
+					if cursor >= bytes.len() { break }
+					continue
+				},
+			};
+		}
+
+		Ok(())
 	}
 }

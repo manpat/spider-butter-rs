@@ -7,3 +7,6 @@
 *.pem
 mappings.sb
 index.html
+
+big.js
+gen_bigjs.py
