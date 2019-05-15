@@ -9,6 +9,8 @@ use std::str;
 use std::sync::Arc;
 use acme_client::openssl::ssl::{SslAcceptor, SslMethod};
 
+use failure::bail;
+
 use crate::SBResult;
 
 use crate::cert::Certificate;
@@ -28,7 +30,7 @@ pub enum FileserverCommand {
 	// Close,
 }
 
-pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>) {
+pub fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand>) {
 	let mut mappings = Arc::new(Mappings::new(false));
 	let mut tx_list = Vec::new();
 
@@ -47,7 +49,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 	let mut zombie_mode = false;
 
 	for stream in listener.incoming() {
-		for command in mapping_channel.try_iter() {
+		for command in command_rx.try_iter() {
 			match command {
 				FileserverCommand::NewMappings(new_mappings) => {
 					mappings = Arc::new(new_mappings);
@@ -74,7 +76,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 
 		let stream = stream.unwrap();
 
-		let coro = if let Some(acceptor) = ssl_acceptor.as_ref() {
+		let stream_task = if let Some(acceptor) = ssl_acceptor.as_ref() {
 			let tls_stream = acceptor.accept(stream);
 
 			match tls_stream {
@@ -86,8 +88,10 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 			start_stream_process(stream, mappings.clone(), zombie_mode)
 		};
 
+		// Submit task to worker thread - round robin
 		tx_iter.next().unwrap()
-			.send(coro).unwrap();
+			.send(stream_task)
+			.unwrap();
 	}
 
 	for th in coro_threads {
@@ -95,7 +99,7 @@ pub fn start(listener: TcpListener, mapping_channel: Receiver<FileserverCommand>
 	}
 }
 
-fn continuation_thread(rx: Receiver<Coro<()>>) {
+fn continuation_thread(rx: Receiver<Task<SBResult<()>>>) {
 	let mut coros = Vec::new();
 
 	loop {
@@ -119,10 +123,12 @@ fn continuation_thread(rx: Receiver<Coro<()>>) {
 			}
 
 			for c in coros.iter_mut() {
-				c.resume();
+				if let Some(Err(e)) = c.resume() {
+					println!("[fsrv] Connection aborted with error: {}", e);
+				}
 			}
 
-			coros.retain(Coro::is_valid);
+			coros.retain(Task::is_valid);
 			if coros.is_empty() { break }
 
 			thread::sleep(time::Duration::from_millis(1));
@@ -133,16 +139,13 @@ fn continuation_thread(rx: Receiver<Coro<()>>) {
 }
 
 fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: bool)
-	-> Coro<()>
+	-> Task<SBResult<()>>
 	where S: Read + Write + TcpStreamExt + 'static {
 
-	Coro::from(static move || {
+	Task::from(static move || {
 		// println!("[stream {:?}] new stream", thread::current().id());
 
-		if let Err(e) = stream.set_nonblocking(true) {
-			println!("[fsrv] set_nonblocking failed: {}", e);
-			return
-		}
+		stream.set_nonblocking(true)?;
 
 		let mut buf = [0u8; 8<<10];
 		let read_start = std::time::Instant::now();
@@ -154,41 +157,29 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 			match stream.read(&mut buf) {
 				Err(e) => match e.kind() {
 					EK::WouldBlock => {},
-					_ => {
-						println!("Error while reading request: {:?}", e);
-						return
-					},
+					_ => bail!("Error while reading request: {:?}", e)
 				}
 
-				Ok(0) => {
-					println!("Zero size request");
-					return
-				},
-
+				Ok(0) => bail!("Zero size request"),
 				Ok(s) => break s,
 			}
 
 			if read_start.elapsed().as_secs() > 1 {
-				println!("Timeout during request read");
-				return
+				bail!("Timeout during request read");
 			}
 
 			yield
 		};
 
-		let request = match str::from_utf8(&buf[0..size]) {
-			Ok(string) => http::Request::parse(string),
-			Err(_) => {
-				println!("Request wasn't valid utf8");
-				return
-			},
-		};
+		let request = str::from_utf8(&buf[0..size])
+			.map_err(Into::into)
+			.and_then(http::Request::parse);
 
 		let request = match request {
 			Ok(r) => r,
-			Err(_) => {
+			Err(e) => {
 				let _ = stream.write_all(&http::Response::new("HTTP/1.1 400 Bad Request").into_bytes());
-				return;
+				return Err(e);
 			}
 		};
 
@@ -198,7 +189,7 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 			let new_location = format!("https://{}{}", request.get("Host").unwrap_or(""), request.uri());
 			res.set("Location", &new_location);
 			let _ = stream.write_all(&res.into_bytes());
-			return;
+			return Ok(());
 		}
 
 		let mut encodings = request.get("Accept-Encoding")
@@ -222,22 +213,16 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 			.get_route(request.uri())
 			.and_then(|r| Some((mappings.get_asset(&r.path)?, &r.content_type)));
 
-		let result;
-
 		if let Some((asset, content_type)) = asset_and_content_type {
 			let encoding = encodings.first().cloned()
 				.unwrap_or(Encoding::Uncompressed);
 
 			let content_type = content_type.as_ref().map(String::clone);
 
-			result = coro_await!(send_data_async(stream, asset, encoding, content_type));
+			task_await!(send_data_async(stream, asset, encoding, content_type))
 		} else {
 			let response = http::Response::new("HTTP/1.1 404 File not found").into_bytes();
-			result = coro_await!(write_async(&mut stream, &response));
-		}
-
-		if let Err(e) = result {
-			println!("Error sending data: {:?}", e);
+			task_await!(write_async(&mut stream, &response))
 		}
 
 		// println!("[stream {:?}] stream close", thread::current().id());
@@ -264,8 +249,8 @@ fn send_data_async<S>(mut stream: S, data: Arc<dyn MappedAsset>, encoding: Encod
 
 		let response_head = res.into_bytes();
 
-		coro_await!(write_async(&mut stream, &response_head))?;
-		coro_await!(write_async(&mut stream, &body))?;
+		task_await!(write_async(&mut stream, &response_head))?;
+		task_await!(write_async(&mut stream, &body))?;
 
 		Ok(())
 	}
