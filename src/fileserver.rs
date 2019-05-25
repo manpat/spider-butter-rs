@@ -2,12 +2,13 @@ use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver};
 use std::io::{Write, Read};
 use std::ops::Generator;
+use std::rc::Rc;
 use std::thread;
 use std::time;
 use std::str;
 
 use std::sync::Arc;
-use acme_client::openssl::ssl::{SslAcceptor, SslMethod};
+use acme_client::openssl::ssl::{SslAcceptor, SslMethod, HandshakeError};
 
 use failure::bail;
 
@@ -23,6 +24,9 @@ const MAX_CONCURRENT_CONNECTIONS_PER_THREAD: usize = 128;
 const MAX_PENDING_CONNECTIONS_PER_THREAD: usize = 128;
 const NUM_WORKER_THREADS: usize = 4;
 
+const SSL_UPGRADE_TIMEOUT_SECS: u64 = 5;
+const REQUEST_READ_TIMEOUT_SECS: u64 = 5;
+
 pub enum FileserverCommand {
 	NewMappings(Mappings),
 	SetCert(Certificate),
@@ -32,19 +36,23 @@ pub enum FileserverCommand {
 
 pub fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand>) {
 	let mut mappings = Arc::new(Mappings::new(false));
-	let mut tx_list = Vec::new();
 
-	let coro_threads = {
+	let (coro_threads, worker_tx_list) = {
+		let mut txs = Vec::new();
 		let mut ths = Vec::new();
 		for _ in 0..NUM_WORKER_THREADS {
 			let (tx, rx) = mpsc::sync_channel(MAX_PENDING_CONNECTIONS_PER_THREAD);
 			ths.push(thread::spawn(move || continuation_thread(rx)));
-			tx_list.push(tx);
+			txs.push(tx);
 		}
-		ths
+		(ths, txs)
 	};
 
-	let mut tx_iter = tx_list.iter().cycle();
+	let mut worker_tx_iter = worker_tx_list.into_iter().cycle();
+	let mut submit_task = move |task| {
+		worker_tx_iter.next().unwrap().send(task).unwrap()
+	};
+
 	let mut ssl_acceptor = None;
 	let mut zombie_mode = false;
 
@@ -61,7 +69,7 @@ pub fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand>) {
 					builder.add_extra_chain_cert(cert.intermediate().clone()).unwrap();
 					builder.set_private_key(cert.private_key()).unwrap();
 					builder.check_private_key().unwrap();
-					ssl_acceptor = Some(builder.build());
+					ssl_acceptor = Some(Rc::new(builder.build()));
 				}
 
 				FileserverCommand::Zombify => {
@@ -70,28 +78,45 @@ pub fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand>) {
 			}
 		}
 
-		if !stream.is_ok() {
+		if stream.is_err() {
 			continue
 		}
 
 		let stream = stream.unwrap();
 
-		let stream_task = if let Some(acceptor) = ssl_acceptor.as_ref() {
-			let tls_stream = acceptor.accept(stream);
+		if stream.set_nonblocking(true).is_err() {
+			continue
+		}
 
-			match tls_stream {
-				Ok(s) => start_stream_process(s, mappings.clone(), zombie_mode),
-				Err(_) => continue,
-			}
+		let mappings_clone = mappings.clone();
+
+		if let Some(acceptor) = ssl_acceptor.as_ref().map(Rc::clone) {
+			let stream_task = static move || {
+				// Start TLS upgrade
+				let mut accept_result = acceptor.accept(stream);
+				let handshake_timer = std::time::Instant::now();
+
+				// Keep resuming handshake until either an error, timeout or success
+				while let Err(HandshakeError::WouldBlock(inprogress_stream)) = accept_result {
+					if handshake_timer.elapsed().as_secs() >= SSL_UPGRADE_TIMEOUT_SECS {
+						bail!("Timeout while trying to upgrade connection")
+					}
+
+					yield;
+					accept_result = inprogress_stream.handshake();
+				}
+
+				// Start regular stream process
+				let tls_stream = accept_result?;
+				task_await!(start_stream_process(tls_stream, mappings_clone, zombie_mode))
+			};
+
+			submit_task(stream_task.into());
 
 		} else {
-			start_stream_process(stream, mappings.clone(), zombie_mode)
-		};
-
-		// Submit task to worker thread - round robin
-		tx_iter.next().unwrap()
-			.send(stream_task)
-			.unwrap();
+			let stream_task = start_stream_process(stream, mappings_clone, zombie_mode);
+			submit_task(stream_task.into());
+		}
 	}
 
 	for th in coro_threads {
@@ -138,19 +163,18 @@ fn continuation_thread(rx: Receiver<Task<SBResult<()>>>) {
 	}
 }
 
+
 fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: bool)
-	-> Task<SBResult<()>>
+	-> impl Generator<Yield=(), Return=SBResult<()>>
 	where S: Read + Write + TcpStreamExt + 'static {
 
-	Task::from(static move || {
+	static move || {
 		// println!("[stream {:?}] new stream", thread::current().id());
-
-		stream.set_nonblocking(true)?;
 
 		let mut buf = [0u8; 8<<10];
 		let read_start = std::time::Instant::now();
 
-		// TODO: wtf is this, make it better
+		// Try to read request
 		let size = loop {
 			use std::io::ErrorKind as EK;
 
@@ -164,7 +188,7 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 				Ok(s) => break s,
 			}
 
-			if read_start.elapsed().as_secs() > 1 {
+			if read_start.elapsed().as_secs() > REQUEST_READ_TIMEOUT_SECS {
 				bail!("Timeout during request read");
 			}
 
@@ -183,6 +207,8 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 			}
 		};
 
+		// If we're on a zombie thread, and the request isn't part of an acme challenge,
+		// tell the client to upgrade to https
 		if zombie_mode && !request.uri().contains("/.well-known/acme-challenge") {
 			// TODO: this needs to be made way more robust - way too much trust here
 			let mut res = http::Response::new("HTTP/1.1 301 Moved Permanently");
@@ -192,6 +218,7 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 			return Ok(());
 		}
 
+		// Figure out what compression method to use
 		let mut encodings = request.get("Accept-Encoding")
 			.map(|s| s.split_terminator(',')
 				.map(str::trim)
@@ -209,6 +236,8 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 			_ => 10,
 		});
 
+		// Try to send the asset with the correct encoding and content type
+		// or bail with a 404 if it's not found in the mappings
 		let asset_and_content_type = mappings
 			.get_route(request.uri())
 			.and_then(|r| Some((mappings.get_asset(&r.path)?, &r.content_type)));
@@ -226,7 +255,7 @@ fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_mode: 
 		}
 
 		// println!("[stream {:?}] stream close", thread::current().id());
-	})
+	}
 }
 
 fn send_data_async<S>(mut stream: S, data: Arc<dyn MappedAsset>, encoding: Encoding, content_type: Option<String>)
