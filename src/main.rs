@@ -136,17 +136,23 @@ fn start_autorenew_thread(domains: Vec<String>, insecure_server: mpsc::Sender<Fi
 
 	println!("Starting certificate autorenewal thread...");
 
-	thread::spawn(move || -> SBResult<()> {
+	thread::spawn(move || {
 		loop {
-			let cert = cert::acquire_certificate(&domains, &insecure_server, staging)?;
-			let days_to_sleep = cert.days_till_expiry()?;
+			let cert = cert::acquire_certificate(&domains, &insecure_server, staging)
+				.expect("Failed to acquire certificate");
 
-			assert!(days_to_sleep > 0);
+			let days_till_expiry = cert.days_till_expiry().unwrap();
 
-			secure_server.send(FileserverCommand::SetCert(cert))?;
+			assert!(days_till_expiry > 0);
+			println!("Valid certificate acquired");
+
+			secure_server.send(FileserverCommand::SetCert(cert)).unwrap();
 
 			// I don't know if sleeping for long periods of time is okay, but idk how else to do this
-			thread::sleep(Duration::from_secs(days_to_sleep as u64 * 24 * 60 * 60));
+			let hours_to_wait = days_till_expiry.saturating_sub(cert::RENEWAL_PERIOD_DAYS) as u64 * 24;
+			for _ in 0..hours_to_wait {
+				thread::sleep(Duration::from_secs(60 * 60));
+			}
 
 			println!("Renewing certificate...");
 		}

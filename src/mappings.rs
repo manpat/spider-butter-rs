@@ -220,14 +220,14 @@ impl Mappings {
 		self.mappings.get(key)
 	}
 
-	pub fn get_asset(&self, route: &PathBuf) -> Option<Arc<MappedAsset>> {
+	pub fn get_asset(&self, route: &PathBuf) -> Option<Arc<dyn MappedAsset>> {
 		if self.caching_enabled {
 			self.file_cache.get(route)
 				.cloned()
-				.map(|a| a as Arc<MappedAsset>)
+				.map(|a| a as Arc<dyn MappedAsset>)
 
 		} else {
-			Some(Arc::new(UnprocessedAsset {file_path: route.clone()}) as Arc<MappedAsset>)
+			Some(Arc::new(UnprocessedAsset {file_path: route.clone()}) as Arc<dyn MappedAsset>)
 		}
 	}
 }

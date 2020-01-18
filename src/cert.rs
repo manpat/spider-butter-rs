@@ -2,8 +2,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::path::Path;
 use std::fs;
-use acme_client::SignedCertificate;
+use std::time::Duration;
 
+use acme_client::SignedCertificate;
 use acme_client::openssl;
 use self::openssl::pkey::{PKey, Private};
 use self::openssl::x509::X509;
@@ -22,6 +23,8 @@ const STAGING_INTERMEDIATE_CERT_FILENAME: &'static str = ".spiderbutter/staging_
 
 const PRIV_CERT_FILENAME: &'static str = ".spiderbutter/private_key.pem";
 const STAGING_PRIV_CERT_FILENAME: &'static str = ".spiderbutter/staging_private_key.pem";
+
+pub const RENEWAL_PERIOD_DAYS: i32 = 7;
 
 pub fn certificate_filename(staging: bool) -> &'static str {
 	if staging {
@@ -145,7 +148,7 @@ fn load_certificate_from(cert_path: &Path, intermediate_path: &Path, priv_key_pa
 
 	let days_till_expiry = cert.days_till_expiry()?;
 
-	if days_till_expiry <= 0 {
+	if days_till_expiry <= RENEWAL_PERIOD_DAYS {
 		println!("Certificate exists but has expired or is near expiry - ignoring");
 		failure::bail!("Certificate expired")
 	}
@@ -196,7 +199,7 @@ fn request_new_certificate(domains: &[String], fs_command_tx: &mpsc::Sender<File
 	}
 
 	fs_command_tx.send(FileserverCommand::NewMappings(mapping))?;
-	thread::sleep(std::time::Duration::from_millis(500));
+	thread::sleep(Duration::from_millis(500));
 
 	println!("Validating...");
 
