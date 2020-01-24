@@ -211,6 +211,9 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 		order = client.fetch_order(&account, &order_location)?;
 
 		match order.status {
+			// It shouldn't really be in this state but wait anyway
+			AcmeStatus::Pending => continue,
+
 			// Server is still validating
 			AcmeStatus::Processing => continue,
 
@@ -221,15 +224,12 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 			AcmeStatus::Valid => break,
 
 			AcmeStatus::Invalid => {
-				let domain = order.identifiers.get(0)
-					.ok_or_else(|| failure::format_err!("Malformed Order object - missing indentifier"))?
-					.uri.as_str();
-
-				println!("Authorization failed for {}", domain);
-				break
+				failure::bail!("Authorization failed!")
 			}
 
-			_ => break
+			// _ => {
+			// 	failure::bail!("Unexpected state for Order: {:?}", order.status)
+			// }
 		}
 	}
 
