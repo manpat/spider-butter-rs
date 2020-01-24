@@ -58,15 +58,13 @@ pub struct Certificate {
 
 impl Certificate {
 	pub fn from_signed(cert: SignedCertificate) -> SBResult<Certificate> {
-		let mut cert_raw = Vec::new();
-		let mut intermediate_raw = Vec::new();
-		let mut priv_raw = Vec::new();
+		let SignedCertificate {cert, intermediate_cert, pkey, ..} = cert;
 
-		cert.write_signed_certificate(&mut cert_raw).map_err(acme_err_to_failure)?;
-		cert.write_intermediate_certificate(None, &mut intermediate_raw).map_err(acme_err_to_failure)?;
-		cert.write_private_key(&mut priv_raw).map_err(acme_err_to_failure)?;
-
-		Certificate::from_pem(&cert_raw, &intermediate_raw, &priv_raw)
+		Ok(Certificate {
+			public_cert: cert,
+			intermediate_cert,
+			private_key: pkey,
+		})
 	}
 
 	pub fn from_pem(cert_raw: &[u8], intermediate_raw: &[u8], priv_raw: &[u8]) -> SBResult<Certificate> {
@@ -121,18 +119,19 @@ pub fn acquire_certificate(domains: &[String], fs_command_tx: &mpsc::Sender<File
 		return Ok(cert)
 	}
 
-	let cert = request_new_certificate(domains, fs_command_tx, staging)?;
+	let domains = domains.iter()
+		.map(String::as_ref)
+		.collect::<Vec<_>>();
+
+	let cert = request_new_certificate(&domains, fs_command_tx, staging)?;
 
 	if let Some(dir) = cert_path.parent() { fs::create_dir_all(dir)?; }
 	if let Some(dir) = intermediate_cert_path.parent() { fs::create_dir_all(dir)?; }
 	if let Some(dir) = priv_key_path.parent() { fs::create_dir_all(dir)?; }
 
-	cert.save_signed_certificate(cert_path)
-		.map_err(acme_err_to_failure)?;
-	cert.save_intermediate_certificate(None, intermediate_cert_path)
-		.map_err(acme_err_to_failure)?;
-	cert.save_private_key(priv_key_path)
-		.map_err(acme_err_to_failure)?;
+	std::fs::write(cert_path, cert.cert.to_pem()?)?;
+	std::fs::write(intermediate_cert_path, cert.intermediate_cert.to_pem()?)?;
+	std::fs::write(priv_key_path, cert.pkey.private_key_to_pem_pkcs8()?)?;
 
 	Certificate::from_signed(cert)
 }
@@ -159,66 +158,82 @@ fn load_certificate_from(cert_path: &Path, intermediate_path: &Path, priv_key_pa
 }
 
 
-fn request_new_certificate(domains: &[String], fs_command_tx: &mpsc::Sender<FileserverCommand>, staging: bool) -> SBResult<SignedCertificate> {
-	use acme_client::Directory;
-
-	let directory = if staging {
-		Directory::from_url("https://acme-staging.api.letsencrypt.org/directory").map_err(acme_err_to_failure)?
-	} else {
-		Directory::lets_encrypt().map_err(acme_err_to_failure)?
-	};
-
-	let account = directory
-		.account_registration()
-		.register()
-		.map_err(acme_err_to_failure)?;
+fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<FileserverCommand>, staging: bool) -> SBResult<SignedCertificate> {
+	use acme_client::{AcmeClient, AcmeStatus, AccountRegistration, Authorization};
 
 	assert!(domains.len() > 0);
 
-	let mut auths = Vec::new();
+	println!("Requesting certificate for {:?}", domains);
+
+	let client = if staging {
+		AcmeClient::lets_encrypt_staging()?
+	} else {
+		AcmeClient::lets_encrypt()?
+	};
+
+	let account = client.register_account(AccountRegistration::new())?;
+	let (mut order, order_location) = client.submit_order(&account, domains)?;
+
 	let mut challenges = Vec::new();
 	let mut mapping = Mappings::new(true);
 
-	for domain in domains.iter() {
-		let auth = account.authorization(domain)
-			.map_err(acme_err_to_failure)?;
+	for auth_uri in order.authorizations.iter() {
+		let auth = client.fetch_authorization(&account, auth_uri)?;
 
-		auths.push(auth);
-	}
+		let Authorization {
+			challenges: auth_challenges,
+			identifier,
+			..
+		} = auth;
 
-	for (auth, domain) in auths.iter().zip(domains.iter()) {
-		let http_challenge = auth.get_http_challenge()
-			.ok_or_else(|| failure::format_err!("HTTP Challenge not found"))?;
+		let challenge = auth_challenges.into_iter()
+			.filter(|c| c.challenge_type.starts_with("http"))
+			.next()
+			.ok_or_else(|| failure::format_err!("HTTP Challenge not found for '{}'", identifier.uri))?;
 
-		println!("Requesting certificate for '{}'", domain);
+		let challenge_key_auth = account.calculate_key_authorization(&challenge)?;
 
-		let path = format!("/.well-known/acme-challenge/{}", http_challenge.token());
-
-		mapping.insert_data_mapping(&path, http_challenge.key_authorization())?;
-		challenges.push(http_challenge);
+		let path = format!("/.well-known/acme-challenge/{}", challenge.token);
+		mapping.insert_data_mapping(&path, challenge_key_auth)?;
+		challenges.push(challenge);
 	}
 
 	fs_command_tx.send(FileserverCommand::NewMappings(mapping))?;
-	thread::sleep(Duration::from_millis(500));
+	thread::sleep(Duration::from_millis(200));
 
-	println!("Validating...");
-
-	for challenge in challenges {
-		challenge.validate().map_err(acme_err_to_failure)?;
+	for challenge in challenges.iter() {
+		client.signal_challenge_ready(&account, challenge)?;
 	}
 
+	loop {
+		std::thread::sleep(std::time::Duration::from_millis(200));
+
+		order = client.fetch_order(&account, &order_location)?;
+
+		match order.status {
+			// Server is still validating
+			AcmeStatus::Processing => continue,
+
+			// Ready to finalize
+			AcmeStatus::Ready => break,
+
+			// Already been finalized?
+			AcmeStatus::Valid => break,
+
+			AcmeStatus::Invalid => {
+				let domain = order.identifiers.get(0)
+					.ok_or_else(|| failure::format_err!("Malformed Order object - missing indentifier"))?
+					.uri.as_str();
+
+				println!("Authorization failed for {}", domain);
+				break
+			}
+
+			_ => break
+		}
+	}
+
+	let (cert, _) = client.finalize_order(&account, &order)?;
 	println!("Validation successful");
-
-	let domain_refs = domains.iter()
-		.map(String::as_str)
-		.collect::<Vec<_>>();
-
-	account.certificate_signer(&domain_refs)
-		.sign_certificate()
-		.map_err(acme_err_to_failure)
-}
-
-
-pub fn acme_err_to_failure(err: acme_client::error::Error) -> failure::Error {
-	failure::format_err!("{:?}", err)
+	Ok(cert)
 }

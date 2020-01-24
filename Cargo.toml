@@ -13,5 +13,6 @@ structopt = "0.2"
 failure = "0.1.1"
 
 [dependencies.acme-client]
-version = "0.5"
+git = "https://github.com/manpat/acme-client"
+# path = "../acme-client"
 default-features = false
