@@ -60,6 +60,7 @@ impl<'a> Request<'a> {
 	}
 }
 
+
 impl<'a> Response<'a> {
 	pub fn new(status: &'a str) -> Response<'a> {
 		Response {

@@ -166,19 +166,18 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 	println!("Requesting certificate for {:?}", domains);
 
 	let client = if staging {
-		AcmeClient::lets_encrypt_staging()?
+		AcmeClient::lets_encrypt_staging(AccountRegistration::new())?
 	} else {
-		AcmeClient::lets_encrypt()?
+		AcmeClient::lets_encrypt(AccountRegistration::new())?
 	};
 
-	let account = client.register_account(AccountRegistration::new())?;
-	let (mut order, order_location) = client.submit_order(&account, domains)?;
+	let (mut order, order_location) = client.submit_order(domains)?;
 
 	let mut challenges = Vec::new();
 	let mut mapping = Mappings::new(true);
 
 	for auth_uri in order.authorizations.iter() {
-		let auth = client.fetch_authorization(&account, auth_uri)?;
+		let auth = client.fetch_authorization(auth_uri)?;
 
 		let Authorization {
 			challenges: auth_challenges,
@@ -191,7 +190,7 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 			.next()
 			.ok_or_else(|| failure::format_err!("HTTP Challenge not found for '{}'", identifier.uri))?;
 
-		let challenge_key_auth = account.calculate_key_authorization(&challenge)?;
+		let challenge_key_auth = client.calculate_key_authorization(&challenge)?;
 
 		let path = format!("/.well-known/acme-challenge/{}", challenge.token);
 		mapping.insert_data_mapping(&path, challenge_key_auth)?;
@@ -202,13 +201,13 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 	thread::sleep(Duration::from_millis(200));
 
 	for challenge in challenges.iter() {
-		client.signal_challenge_ready(&account, challenge)?;
+		client.signal_challenge_ready(challenge)?;
 	}
 
 	loop {
 		std::thread::sleep(std::time::Duration::from_millis(200));
 
-		order = client.fetch_order(&account, &order_location)?;
+		order = client.fetch_order(&order_location)?;
 
 		match order.status {
 			// It shouldn't really be in this state but wait anyway
@@ -226,14 +225,10 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 			AcmeStatus::Invalid => {
 				failure::bail!("Authorization failed!")
 			}
-
-			// _ => {
-			// 	failure::bail!("Unexpected state for Order: {:?}", order.status)
-			// }
 		}
 	}
 
-	let (cert, _) = client.finalize_order(&account, &order)?;
+	let (cert, _) = client.finalize_order(&order)?;
 	println!("Validation successful");
 	Ok(cert)
 }
