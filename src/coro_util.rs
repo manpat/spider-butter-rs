@@ -17,7 +17,7 @@ impl<R> Task<R> {
 	pub fn resume(&mut self) -> Option<R> {
 		if !self.valid { return None }
 
-		if let GeneratorState::Complete(yielded_value) = self.coro.as_mut().resume() {
+		if let GeneratorState::Complete(yielded_value) = self.coro.as_mut().resume(()) {
 			self.valid = false;
 			Some(yielded_value)
 		} else {
@@ -48,7 +48,7 @@ macro_rules! task_await {
 				Pin::new_unchecked(&mut c)
 			};
 
-			if let GeneratorState::Complete(r) = pinned.resume() {
+			if let GeneratorState::Complete(r) = pinned.resume(()) {
 				break r
 			}
 

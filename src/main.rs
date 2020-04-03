@@ -1,5 +1,6 @@
 #![feature(generators, generator_trait)]
 #![feature(specialization)]
+#![deny(rust_2018_idioms, future_incompatible)]
 
 use structopt::StructOpt;
 use inotify::{event_mask, watch_mask, Inotify};

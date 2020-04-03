@@ -3,7 +3,7 @@
 [[package]]
 name = "acme-client"
 version = "0.5.3"
-source = "git+https://github.com/manpat/acme-client#bf7532fb8209e2ff94d0596ef8c103e3f984f64a"
+source = "git+https://github.com/manpat/acme-client#5efb72dd166c5b55b6df3b771374eeffb5189446"
 dependencies = [
  "base64 0.9.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
