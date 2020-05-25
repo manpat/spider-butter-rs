@@ -45,7 +45,7 @@ struct Opts {
 	#[structopt(short, long, default_value="8001")]
 	tls_port: u16,
 
-	/// Use letsencrypt staging API so you don't get ratelimited
+	/// Use letsencrypt staging API so you don't get rate limited
 	#[structopt(long)]
 	staging: bool,
 

@@ -90,7 +90,7 @@ pub fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand>) {
 
 		let mappings_clone = mappings.clone();
 
-		if let Some(acceptor) = ssl_acceptor.as_ref().map(Rc::clone) {
+		if let Some(acceptor) = ssl_acceptor.clone() {
 			let stream_task = static move || {
 				// Start TLS upgrade
 				let mut accept_result = acceptor.accept(stream);
