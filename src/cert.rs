@@ -1,8 +1,9 @@
-use std::sync::mpsc;
-use std::thread;
 use std::path::Path;
 use std::fs;
 use std::time::Duration;
+
+use async_std::task;
+use async_std::sync::Sender;
 
 use acme_client::SignedCertificate;
 use acme_client::openssl;
@@ -110,12 +111,12 @@ impl Certificate {
 }
 
 
-pub fn acquire_certificate(domains: &[String], fs_command_tx: &mpsc::Sender<FileserverCommand>, staging: bool) -> SBResult<Certificate> {
+pub async fn acquire_certificate(domains: &[String], fs_command_tx: &Sender<FileserverCommand>, staging: bool) -> SBResult<Certificate> {
 	let cert_path = Path::new(certificate_filename(staging));
 	let intermediate_cert_path = Path::new(intermediate_cert_filename(staging));
 	let priv_key_path = Path::new(private_key_filename(staging));
 
-	if let Ok(cert) = load_certificate_from(cert_path, intermediate_cert_path, priv_key_path) {
+	if let Ok(cert) = load_certificate_from(cert_path, intermediate_cert_path, priv_key_path).await {
 		return Ok(cert)
 	}
 
@@ -123,7 +124,7 @@ pub fn acquire_certificate(domains: &[String], fs_command_tx: &mpsc::Sender<File
 		.map(String::as_ref)
 		.collect::<Vec<_>>();
 
-	let cert = request_new_certificate(&domains, fs_command_tx, staging)?;
+	let cert = request_new_certificate(&domains, fs_command_tx, staging).await?;
 
 	if let Some(dir) = cert_path.parent() { fs::create_dir_all(dir)?; }
 	if let Some(dir) = intermediate_cert_path.parent() { fs::create_dir_all(dir)?; }
@@ -138,7 +139,7 @@ pub fn acquire_certificate(domains: &[String], fs_command_tx: &mpsc::Sender<File
 
 
 
-fn load_certificate_from(cert_path: &Path, intermediate_path: &Path, priv_key_path: &Path) -> SBResult<Certificate> {
+async fn load_certificate_from(cert_path: &Path, intermediate_path: &Path, priv_key_path: &Path) -> SBResult<Certificate> {
 	let cert_raw = fs::read(cert_path)?;
 	let intermediate_raw = fs::read(intermediate_path)?;
 	let priv_key_raw = fs::read(priv_key_path)?;
@@ -158,7 +159,7 @@ fn load_certificate_from(cert_path: &Path, intermediate_path: &Path, priv_key_pa
 }
 
 
-fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<FileserverCommand>, staging: bool) -> SBResult<SignedCertificate> {
+async fn request_new_certificate(domains: &[&str], fs_command_tx: &Sender<FileserverCommand>, staging: bool) -> SBResult<SignedCertificate> {
 	use acme_client::{AcmeClient, AcmeStatus, AccountRegistration, Authorization};
 
 	assert!(domains.len() > 0);
@@ -197,15 +198,15 @@ fn request_new_certificate(domains: &[&str], fs_command_tx: &mpsc::Sender<Filese
 		challenges.push(challenge);
 	}
 
-	fs_command_tx.send(FileserverCommand::NewMappings(mapping))?;
-	thread::sleep(Duration::from_millis(200));
+	fs_command_tx.send(FileserverCommand::NewMappings(mapping)).await;
+	task::sleep(Duration::from_millis(200)).await;
 
 	for challenge in challenges.iter() {
 		client.signal_challenge_ready(challenge)?;
 	}
 
 	loop {
-		std::thread::sleep(std::time::Duration::from_millis(200));
+		task::sleep(std::time::Duration::from_millis(200)).await;
 
 		order = client.fetch_order(&order_location)?;
 

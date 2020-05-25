@@ -19,7 +19,7 @@ pub enum Encoding {
 	Deflate,
 }
 
-pub trait MappedAsset {
+pub trait MappedAsset: Send + Sync {
 	fn get_encoding(&self, _: Encoding) -> SBResult<Vec<u8>>;
 }
 

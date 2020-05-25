@@ -5,13 +5,11 @@
 use structopt::StructOpt;
 use inotify::{event_mask, watch_mask, Inotify};
 
-use std::net::TcpListener;
-use std::sync::mpsc;
-use std::thread;
+use async_std::net::TcpListener;
+use async_std::sync::{channel, Sender};
+use async_std::task;
 
-#[macro_use] mod coro_util;
 mod fileserver;
-mod tcp_util;
 mod http;
 mod cert;
 
@@ -54,45 +52,54 @@ struct Opts {
 	domains: Vec<String>,
 }
 
+
 fn main() -> SBResult<()> {
+	async_std::task::block_on(start())
+}
+
+
+async fn start() -> SBResult<()> {
 	let opts = Opts::from_args();
 
 	let current_dir = std::env::current_dir().expect("Failed to determine current directory");
 
-	let fs_listener = TcpListener::bind(("0.0.0.0", opts.port)).unwrap();
-	let (mut fs_command_tx, fs_command_rx) = mpsc::channel();
+	let fs_listener = TcpListener::bind(("0.0.0.0", opts.port)).await?;
+	let (mut fs_command_tx, fs_command_rx) = channel(3);
 
 	println!("Running...");
 	if opts.nocache {
 		println!("Caching disabled!");
 	}
 
-	thread::spawn(move || fileserver::start(fs_listener, fs_command_rx));
+	task::spawn(fileserver::start(fs_listener, fs_command_rx));
 
 	if opts.secure {
-		let sfs_listener = TcpListener::bind(("0.0.0.0", opts.tls_port)).unwrap();
-		let (sfs_command_tx, sfs_command_rx) = mpsc::channel();
+		let sfs_listener = TcpListener::bind(("0.0.0.0", opts.tls_port)).await?;
+		let (sfs_command_tx, sfs_command_rx) = channel(3);
 
-		thread::spawn(move || fileserver::start(sfs_listener, sfs_command_rx));
-		start_autorenew_thread(opts.domains, fs_command_tx.clone(), sfs_command_tx.clone(), opts.staging);
+		task::spawn(fileserver::start(sfs_listener, sfs_command_rx));
+		task::spawn(
+			start_autorenew_thread(opts.domains, fs_command_tx.clone(), sfs_command_tx.clone(), opts.staging)
+		);
 
-		fs_command_tx.send(FileserverCommand::Zombify).unwrap();
+		fs_command_tx.send(FileserverCommand::Zombify).await;
 		fs_command_tx = sfs_command_tx;
 	}
 
 	if opts.local {
 		let mappings = Mappings::from_dir(".".into(), !opts.nocache)?;
-		fs_command_tx.send(FileserverCommand::NewMappings(mappings))?;
+		fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
 		println!("Done.");
 
+		// TODO: Something better
 		loop {
-			thread::park();
+			task::yield_now().await;
 		}
 	}
 
 	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
 		Ok(mappings) => {
-			fs_command_tx.send(FileserverCommand::NewMappings(mappings))?;
+			fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
 			println!("Done.");
 		}
 
@@ -105,57 +112,63 @@ fn main() -> SBResult<()> {
 	inotify.add_watch(current_dir, watch_mask::MODIFY)
 		.expect("Failed to add inotify watch");
 
-	let mut buffer = [0u8; 4096];
+	// let mut buffer = [0u8; 4096];
+	// loop {
+	// 	println!("Waiting for events...");
+	// 	let mapping_file_changed = inotify
+	// 		.read_events_blocking(&mut buffer)
+	// 		.expect("Failed to read inotify events")
+	// 		.filter(|e| !e.mask.contains(event_mask::ISDIR))
+	// 		.map(|e| e.name.to_str().unwrap_or(""))
+	// 		.any(|name| name.ends_with(MAPPINGS_FILENAME));
+
+	// 	if mapping_file_changed {
+	// 		println!("Updating mappings...");
+
+	// 		match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
+	// 			Ok(mappings) => {
+	// 				fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
+	// 				println!("Done.");
+	// 			}
+
+	// 			Err(err) => {
+	// 				println!("Error: {:?}", err);
+	// 			}
+	// 		}
+	// 	}
+	// }
+
+	// TODO: something better
 	loop {
-		let mapping_file_changed = inotify
-			.read_events_blocking(&mut buffer)
-			.expect("Failed to read inotify events")
-			.filter(|e| !e.mask.contains(event_mask::ISDIR))
-			.map(|e| e.name.to_str().unwrap_or(""))
-			.any(|name| name.ends_with(MAPPINGS_FILENAME));
-
-		if mapping_file_changed {
-			println!("Updating mappings...");
-
-			match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
-				Ok(mappings) => {
-					fs_command_tx.send(FileserverCommand::NewMappings(mappings)).unwrap();
-					println!("Done.");
-				}
-
-				Err(err) => {
-					println!("Error: {:?}", err);
-				}
-			}
-		}
+		task::yield_now().await;
 	}
 }
 
 
-fn start_autorenew_thread(domains: Vec<String>, insecure_server: mpsc::Sender<FileserverCommand>, secure_server: mpsc::Sender<FileserverCommand>, staging: bool) {
+
+async fn start_autorenew_thread(domains: Vec<String>, insecure_server: Sender<FileserverCommand>, secure_server: Sender<FileserverCommand>, staging: bool) {
 	use std::time::Duration;
 
-	println!("Starting certificate autorenewal thread...");
+	println!("Starting certificate autorenewal task...");
 
-	thread::spawn(move || {
-		loop {
-			let cert = cert::acquire_certificate(&domains, &insecure_server, staging)
-				.expect("Failed to acquire certificate");
+	loop {
+		let cert = cert::acquire_certificate(&domains, &insecure_server, staging)
+			.await
+			.expect("Failed to acquire certificate");
 
-			let days_till_expiry = cert.days_till_expiry().unwrap();
+		let days_till_expiry = cert.days_till_expiry().unwrap();
 
-			assert!(days_till_expiry > 0);
-			println!("Valid certificate acquired");
+		assert!(days_till_expiry > 0);
+		println!("Valid certificate acquired");
 
-			secure_server.send(FileserverCommand::SetCert(cert)).unwrap();
+		secure_server.send(FileserverCommand::SetCert(cert)).await;
 
-			// I don't know if sleeping for long periods of time is okay, but idk how else to do this
-			let hours_to_wait = days_till_expiry.saturating_sub(cert::RENEWAL_PERIOD_DAYS) as u64 * 24;
-			for _ in 0..hours_to_wait {
-				thread::sleep(Duration::from_secs(60 * 60));
-			}
-
-			println!("Renewing certificate...");
+		// I don't know if sleeping for long periods of time is okay, but idk how else to do this
+		let hours_to_wait = days_till_expiry.saturating_sub(cert::RENEWAL_PERIOD_DAYS) as u64 * 24;
+		for _ in 0..hours_to_wait {
+			task::sleep(Duration::from_secs(60 * 60)).await;
 		}
-	});
+
+		println!("Renewing certificate...");
+	}
 }
