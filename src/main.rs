@@ -2,8 +2,9 @@
 #![feature(specialization)]
 #![deny(rust_2018_idioms, future_incompatible)]
 
+use std::time::Duration;
+
 use structopt::StructOpt;
-use inotify::{event_mask, watch_mask, Inotify};
 
 use async_std::net::TcpListener;
 use async_std::sync::{channel, Sender};
@@ -61,8 +62,6 @@ fn main() -> SBResult<()> {
 async fn start() -> SBResult<()> {
 	let opts = Opts::from_args();
 
-	let current_dir = std::env::current_dir().expect("Failed to determine current directory");
-
 	let fs_listener = TcpListener::bind(("0.0.0.0", opts.port)).await?;
 	let (mut fs_command_tx, fs_command_rx) = channel(3);
 
@@ -108,47 +107,17 @@ async fn start() -> SBResult<()> {
 		}
 	}
 
-	let mut inotify = Inotify::init().expect("Inotify init failed");
-	inotify.add_watch(current_dir, watch_mask::MODIFY)
-		.expect("Failed to add inotify watch");
+	let nocache = opts.nocache;
 
-	// let mut buffer = [0u8; 4096];
-	// loop {
-	// 	println!("Waiting for events...");
-	// 	let mapping_file_changed = inotify
-	// 		.read_events_blocking(&mut buffer)
-	// 		.expect("Failed to read inotify events")
-	// 		.filter(|e| !e.mask.contains(event_mask::ISDIR))
-	// 		.map(|e| e.name.to_str().unwrap_or(""))
-	// 		.any(|name| name.ends_with(MAPPINGS_FILENAME));
-
-	// 	if mapping_file_changed {
-	// 		println!("Updating mappings...");
-
-	// 		match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
-	// 			Ok(mappings) => {
-	// 				fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
-	// 				println!("Done.");
-	// 			}
-
-	// 			Err(err) => {
-	// 				println!("Error: {:?}", err);
-	// 			}
-	// 		}
-	// 	}
-	// }
+	task::spawn(start_filewatch_thread(nocache, fs_command_tx.clone())).await;
 
 	// TODO: something better
-	loop {
-		task::yield_now().await;
-	}
+	loop { task::yield_now().await }
 }
 
 
 
 async fn start_autorenew_thread(domains: Vec<String>, insecure_server: Sender<FileserverCommand>, secure_server: Sender<FileserverCommand>, staging: bool) {
-	use std::time::Duration;
-
 	println!("Starting certificate autorenewal task...");
 
 	loop {
@@ -171,4 +140,48 @@ async fn start_autorenew_thread(domains: Vec<String>, insecure_server: Sender<Fi
 
 		println!("Renewing certificate...");
 	}
+}
+
+
+async fn start_filewatch_thread(nocache: bool, fs_command_tx: Sender<FileserverCommand>) {
+	use inotify::{Inotify, WatchMask, EventMask};
+
+	println!("Starting file watcher thread...");
+
+	let current_dir = std::env::current_dir().expect("Failed to determine current directory");
+
+	let mut inotify = Inotify::init().expect("Inotify init failed");
+	inotify.add_watch(current_dir, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)
+		.expect("Failed to add inotify watch");
+
+	let mut buffer = [0u8; 4096];
+
+	loop {
+		let events = inotify.read_events(&mut buffer)
+			.expect("Failed to listen for fs events");
+
+		for event in events {
+			if event.mask.contains(EventMask::ISDIR) { continue }
+			if event.name.is_none() { continue }
+
+			let name = event.name.unwrap();
+			if !name.to_str().unwrap_or("").ends_with(MAPPINGS_FILENAME) { continue }
+
+			println!("Updating mappings...");
+
+			match Mappings::from_file(MAPPINGS_FILENAME, !nocache) {
+				Ok(mappings) => {
+					fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
+					println!("Done.");
+				}
+
+				Err(err) => {
+					println!("Error: {:?}", err);
+				}
+			}
+		}
+
+		task::sleep(Duration::from_secs(1)).await;
+	}
+	
 }
