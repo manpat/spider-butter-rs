@@ -6,7 +6,7 @@ authors = ["Patrick Monaghan <pat@patsown.com>"]
 description = "A small whitelist based fileserver"
 
 [dependencies]
-inotify = "0.4"
+inotify = "0.8"
 flate2 = "1.0.1"
 libc = "*"
 structopt = "0.2"
