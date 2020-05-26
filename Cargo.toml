@@ -12,6 +12,11 @@ libc = "*"
 structopt = "0.2"
 failure = "0.1.1"
 
+async-tls = "0.7"
+rustls = "0.17"
+
+x509-parser = "0.7"
+
 [dependencies.acme-client]
 git = "https://github.com/manpat/acme-client"
 # path = "../acme-client"
@@ -20,7 +25,3 @@ default-features = false
 [dependencies.async-std]
 version = "1.6.0"
 features = ["unstable"]
-
-[dependencies.async-tls]
-version = "0.7.0"
-features = []
