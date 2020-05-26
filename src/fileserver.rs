@@ -6,11 +6,11 @@ use async_std::prelude::*;
 use async_std::io::{Write, Read};
 use async_std::net::TcpListener;
 use async_std::sync::Receiver;
+use async_std::future::timeout;
 use async_std::task;
 
-use acme_client::openssl::ssl::{SslAcceptor, SslMethod, HandshakeError};
-
-use failure::bail;
+use rustls::{NoClientAuth, ServerConfig};
+use async_tls::TlsAcceptor;
 
 use crate::SBResult;
 
@@ -18,7 +18,7 @@ use crate::cert::Certificate;
 use crate::mappings::*;
 use crate::http;
 
-const SSL_UPGRADE_TIMEOUT: Duration = Duration::from_secs(5);
+const TLS_UPGRADE_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub enum FileserverCommand {
@@ -46,12 +46,24 @@ pub async fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand
 				}
 
 				FileserverCommand::SetCert(cert) => {
-					let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-					builder.set_certificate(cert.certificate()).unwrap();
-					builder.add_extra_chain_cert(cert.intermediate().clone()).unwrap();
-					builder.set_private_key(cert.private_key()).unwrap();
-					builder.check_private_key().unwrap();
-					ssl_acceptor = Some(builder.build());
+					use rustls::internal::pemfile::{certs, pkcs8_private_keys};
+
+					let private_key = pkcs8_private_keys(&mut cert.private_key())
+						.expect("Failed to read private_key")
+						.remove(0);
+
+					let mut cert_chain = certs(&mut cert.certificate())
+						.expect("Failed to read cert");
+
+					let intermediate = certs(&mut cert.intermediate())
+						.expect("Failed to read intermediate cert");
+
+					cert_chain.extend_from_slice(&intermediate);
+
+					let mut config = ServerConfig::new(NoClientAuth::new());
+					config.set_single_cert(cert_chain, private_key)
+						.expect("Failed to set cert");
+				    ssl_acceptor = Some(TlsAcceptor::from(Arc::new(config)));
 				}
 
 				FileserverCommand::Zombify => {
@@ -69,29 +81,15 @@ pub async fn start(listener: TcpListener, command_rx: Receiver<FileserverCommand
 		let mappings_clone = mappings.clone();
 
 		if let Some(acceptor) = ssl_acceptor.as_ref() {
-			// let mut accept_result = acceptor.accept(stream);
+			// Start TLS upgrade
+			let accept_result = timeout(TLS_UPGRADE_TIMEOUT, acceptor.accept(stream)).await;
 
-			// let stream_task = async move {
-			// 	// Start TLS upgrade
-			// 	let handshake_timer = std::time::Instant::now();
-
-			// 	// Keep resuming handshake until either an error, timeout or success
-			// 	while let Err(HandshakeError::WouldBlock(inprogress_stream)) = accept_result {
-			// 		if handshake_timer.elapsed().as_secs() >= SSL_UPGRADE_TIMEOUT_SECS {
-			// 			bail!("Timeout while trying to upgrade connection")
-			// 		}
-
-			// 		task::yield_now().await;
-			// 		accept_result = inprogress_stream.handshake();
-			// 	}
-
-			// 	// Start regular stream process
-			// 	let tls_stream = accept_result?;
-			// 	start_stream_process(tls_stream, mappings_clone, zombie_mode).await
-			// };
-
-			// task::spawn(stream_task);
-			unimplemented!();
+			if let Ok(Ok(stream)) = accept_result {
+				let stream_task = start_stream_process(stream, mappings_clone, zombie_mode);
+				task::spawn(stream_task);
+			} else {
+				println!("[fsrv] Accept failed");
+			}
 
 		} else {
 			let stream_task = start_stream_process(stream, mappings_clone, zombie_mode);
@@ -108,7 +106,6 @@ async fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_
 
 	// Try to read request
 	let mut buf = [0u8; 8<<10];
-	use async_std::future::timeout;
 
 	let size = timeout(REQUEST_READ_TIMEOUT, stream.read(&mut buf)).await??;
 	let request = str::from_utf8(&buf[0..size])
@@ -174,6 +171,7 @@ async fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_
 
 	Ok(())
 }
+
 
 async fn send_data_async<S>(mut stream: S, data: Arc<dyn MappedAsset>, encoding: Encoding, content_type: Option<String>)
 	-> SBResult<()>

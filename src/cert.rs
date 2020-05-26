@@ -6,15 +6,10 @@ use async_std::task;
 use async_std::sync::Sender;
 
 use acme_client::SignedCertificate;
-use acme_client::openssl;
-use self::openssl::pkey::{PKey, Private};
-use self::openssl::x509::X509;
 
 use crate::SBResult;
 use crate::mappings::Mappings;
 use crate::fileserver::FileserverCommand;
-
-pub type PrivateKey = PKey<Private>;
 
 const CERT_FILENAME: &'static str = ".spiderbutter/certificate_chain.pem";
 const STAGING_CERT_FILENAME: &'static str = ".spiderbutter/staging_certificate_chain.pem";
@@ -52,9 +47,9 @@ pub fn private_key_filename(staging: bool) -> &'static str {
 }
 
 pub struct Certificate {
-	public_cert: X509,
-	intermediate_cert: X509,
-	private_key: PrivateKey,
+	public_cert: Vec<u8>,
+	intermediate_cert: Vec<u8>,
+	private_key: Vec<u8>,
 }
 
 impl Certificate {
@@ -62,52 +57,42 @@ impl Certificate {
 		let SignedCertificate {cert, intermediate_cert, pkey, ..} = cert;
 
 		Ok(Certificate {
-			public_cert: cert,
-			intermediate_cert,
-			private_key: pkey,
+			public_cert: cert.to_pem()?,
+			intermediate_cert: intermediate_cert.to_pem()?,
+			private_key: pkey.private_key_to_pem_pkcs8()?,
 		})
 	}
 
 	pub fn from_pem(cert_raw: &[u8], intermediate_raw: &[u8], priv_raw: &[u8]) -> SBResult<Certificate> {
-		let public_cert = X509::from_pem(&cert_raw)?;
-		let intermediate_cert = X509::from_pem(&intermediate_raw)?;
-		let private_key = PrivateKey::private_key_from_pem(&priv_raw)?;
-
 		Ok(Certificate {
-			public_cert,
-			intermediate_cert,
-			private_key
+			public_cert: cert_raw.to_owned(),
+			intermediate_cert: intermediate_raw.to_owned(),
+			private_key: priv_raw.to_owned()
 		})
 	}
 
 	pub fn days_till_expiry(&self) -> SBResult<i32> {
-		enum Asn1TimeOpaque {}
-		extern "C" { fn ASN1_TIME_diff(pday: *mut libc::c_int, psec: *mut libc::c_int, from: *const Asn1TimeOpaque, to: *const Asn1TimeOpaque) -> libc::c_int; }
+		use x509_parser::pem::Pem;
+		use std::io::Cursor;
 
-		let mut day_offset = 0;
-		let mut second_offset = 0;
+		let x509_validity = Pem::read(Cursor::new(&self.public_cert))
+			.map_err(|_| failure::format_err!("Failed to parse certificate"))?.0
+			.parse_x509()?
+			.tbs_certificate.validity;
 
-		let success = unsafe {
-			ASN1_TIME_diff(
-				&mut day_offset,
-				&mut second_offset,
-				std::ptr::null(),
-				std::mem::transmute(self.public_cert.not_after())
-				// a dirty hack but openssl doesn't give me what I need
-				// this is safe so long as not_after() implements ForeignTypeRef
-			)
-		};
+		let secs_to_expiry = x509_validity.time_to_expiration()
+			.as_ref()
+			.map(Duration::as_secs)
+			.unwrap_or(0);
 
-		if success != 1 {
-			failure::bail!("Failed to determine time to expiry")
-		}
+		let days_to_expiry = secs_to_expiry / 60 / 60 / 24;
 
-		Ok(day_offset)
+		Ok(days_to_expiry as i32)
 	}
 
-	pub fn certificate(&self) -> &X509 { &self.public_cert }
-	pub fn intermediate(&self) -> &X509 { &self.intermediate_cert }
-	pub fn private_key(&self) -> &PrivateKey { &self.private_key }
+	pub fn certificate(&self) -> &[u8] { &self.public_cert }
+	pub fn intermediate(&self) -> &[u8] { &self.intermediate_cert }
+	pub fn private_key(&self) -> &[u8] { &self.private_key }
 }
 
 
