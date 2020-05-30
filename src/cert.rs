@@ -179,7 +179,7 @@ async fn request_new_certificate(domains: &[&str], fs_command_tx: &Sender<Filese
 		let challenge_key_auth = client.calculate_key_authorization(&challenge)?;
 
 		let path = format!("/.well-known/acme-challenge/{}", challenge.token);
-		mapping.insert_data_mapping(&path, challenge_key_auth)?;
+		mapping.insert_data_mapping(&path, challenge_key_auth).await?;
 		challenges.push(challenge);
 	}
 

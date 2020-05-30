@@ -1,5 +1,4 @@
-#![feature(generators, generator_trait)]
-#![feature(specialization)]
+#![feature(entry_insert)]
 #![deny(rust_2018_idioms, future_incompatible)]
 
 use std::time::Duration;
@@ -14,6 +13,7 @@ mod fileserver;
 mod http;
 mod cert;
 
+mod resource;
 mod mappings;
 use crate::mappings::*;
 use crate::fileserver::FileserverCommand;
@@ -86,7 +86,7 @@ async fn start() -> SBResult<()> {
 	}
 
 	if opts.local {
-		let mappings = Mappings::from_dir(".".into(), !opts.nocache)?;
+		let mappings = Mappings::from_dir(".".into(), !opts.nocache).await?;
 		fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
 		println!("Done.");
 
@@ -96,7 +96,7 @@ async fn start() -> SBResult<()> {
 		}
 	}
 
-	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache) {
+	match Mappings::from_file(MAPPINGS_FILENAME, !opts.nocache).await {
 		Ok(mappings) => {
 			fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
 			println!("Done.");
@@ -169,7 +169,7 @@ async fn start_filewatch_thread(nocache: bool, fs_command_tx: Sender<FileserverC
 
 			println!("Updating mappings...");
 
-			match Mappings::from_file(MAPPINGS_FILENAME, !nocache) {
+			match Mappings::from_file(MAPPINGS_FILENAME, !nocache).await {
 				Ok(mappings) => {
 					fs_command_tx.send(FileserverCommand::NewMappings(mappings)).await;
 					println!("Done.");

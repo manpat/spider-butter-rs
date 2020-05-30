@@ -15,6 +15,7 @@ use async_tls::TlsAcceptor;
 use crate::SBResult;
 
 use crate::cert::Certificate;
+use crate::resource::{Resource, Encoding};
 use crate::mappings::*;
 use crate::http;
 
@@ -161,7 +162,7 @@ async fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_
 
 		let content_type = content_type.as_ref().map(String::clone);
 
-		send_data_async(stream, asset, encoding, content_type).await?;
+		send_resource_async(stream, asset, encoding, content_type).await?;
 	} else {
 		let response = http::Response::new("HTTP/1.1 404 File not found").into_bytes();
 		stream.write_all(&response).await?;
@@ -173,11 +174,11 @@ async fn start_stream_process<S>(mut stream: S, mappings: Arc<Mappings>, zombie_
 }
 
 
-async fn send_data_async<S>(mut stream: S, data: Arc<dyn MappedAsset>, encoding: Encoding, content_type: Option<String>)
+async fn send_resource_async<S>(mut stream: S, data: Arc<Resource>, encoding: Encoding, content_type: Option<String>)
 	-> SBResult<()>
 	where S: Write + Unpin + 'static
 {
-	let body = data.get_encoding(encoding)?;
+	let body = data.get_compressed(encoding).await?;
 	let mut res = http::Response::new("HTTP/1.1 200 OK");
 
 	match encoding {
